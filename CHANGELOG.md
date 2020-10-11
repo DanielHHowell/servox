@@ -29,11 +29,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - The `__codename__` support has been generalized as `cryptonym` attribute for
   all connectors.
 - Version output now includes the cryptonym.
+- The `servo.assembly.Assembly` class now maintains a collection of servos
+  rather than a singleton.
+- The optimizer settings are now part of the configuration.
 
 ### Fixed
 
 - Local versions are now resolved via the `pyproject.toml` file to accurately
   reflect pre-release versioning and local work in progress.
+- Scalar `servo.types.DataPoint` objects are now serialized for processing by
+  the optimizer service rather than raising an exception.
 
 ## [0.8.2] "pass the calamari" - 2020-10-16
 
@@ -46,6 +51,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Developer Makefile tasks `format`, `lint`, and `test`.
 - Introduced pre-commit hooks for enforcing style guides and engineering
   standards.
+- Multiple servos can now be run within a single assembly. If the config file is
+  a compound YAML document, multiple servos will be instantiated allowing the
+  concurrent optimization of multiple applications.
+- Introduced emulator connector, which pretends to take measurements and make
+  adjustments with randomly sampled data but does not do any real work.
 
 ### Changed
 

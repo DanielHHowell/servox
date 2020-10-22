@@ -113,7 +113,9 @@ class Mixin:
 
     @property
     def api_client_options(self) -> Dict[str, Any]:
-        return dict(base_url=self.optimizer.api_url, headers=self.api_headers)
+        timeout = httpx.Timeout(10.0, connect=120.0)
+        limits = httpx.Limits(max_keepalive_connections=None, max_connections=None)
+        return dict(base_url=self.optimizer.api_url, headers=self.api_headers, timeout=timeout, limits=limits)
 
     def api_client(self, **kwargs) -> httpx.AsyncClient:
         """Yields an httpx.Client instance configured to talk to Opsani API"""

@@ -113,7 +113,7 @@ class Mixin:
 
     @property
     def api_client_options(self) -> Dict[str, Any]:
-        timeout = httpx.Timeout(10.0, connect=120.0)
+        timeout = httpx.Timeout(60.0)
         limits = httpx.Limits(max_keepalive_connections=None, max_connections=None)
         return dict(base_url=self.optimizer.api_url, headers=self.api_headers, timeout=timeout, limits=limits)
 

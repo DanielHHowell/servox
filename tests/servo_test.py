@@ -1872,3 +1872,16 @@ async def test_remove_connector_raises_if_obj_does_not_exists(servo: Servo) -> N
         str(error.value)
         == "invalid connector: a connector named 'first_test_servo' does not exist in the servo"
     )
+
+def test_servo_name_literal(servo: Servo) -> None:
+    servo.name = "hrm"
+    assert servo.name == "hrm"
+    
+def test_servo_name_from_config() -> None:
+    config = BaseServoConfiguration(name="archibald")
+    servo = Servo(config=config, connectors=[])
+    assert servo.name == "archibald"
+
+def test_servo_name_falls_back_to_optimizer_id(servo: Servo) -> None:
+    assert servo.name == "dev.opsani.com/servox"
+    

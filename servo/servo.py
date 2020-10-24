@@ -205,6 +205,13 @@ class Servo(servo.connector.BaseConnector):
             with servo.utilities.pydantic.extra(connector):
                 connector.api_client_options = self.api_client_options
 
+    @pydantic.root_validator()
+    def _initialize_name(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        if values["name"] == "servo":
+            values["name"] = values["config"].name or values["optimizer"].id
+        
+        return values
+    
     @property
     def api_client_options(self) -> Dict[str, Any]:
         """Return a dictionary of options for configuring proxies, timeouts, and SSL verification of an HTTP client."""

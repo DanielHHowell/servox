@@ -3,9 +3,8 @@ import pathlib
 import pytest
 
 import servo
+import servo.runner
 
-# from servo import Assembly, Optimizer
-from servo import assembly, configuration, runner
 from tests.test_helpers import AdjustConnector
 
 # import servo.runner
@@ -24,7 +23,7 @@ def assembly(servo_yaml: pathlib.Path) -> servo.assembly.Assembly:
     config = config_model.generate()
     servo_yaml.write_text(config.yaml())
 
-    optimizer = configuration.Optimizer(
+    optimizer = servo.Optimizer(
         id="dev.opsani.com/blake-ignite",
         token="bfcf94a6e302222eed3c73a5594badcfd53fef4b6d6a703ed32604",
     )
@@ -35,8 +34,8 @@ def assembly(servo_yaml: pathlib.Path) -> servo.assembly.Assembly:
 
 
 @pytest.fixture
-def runner(assembly) -> servo.runner.Runner:
-    return servo.runner.Runner(assembly)
+def runner(assembly) -> servo.runner.AssemblyRunner:
+    return servo.runner.AssemblyRunner(assembly)
 
 
 import asyncio

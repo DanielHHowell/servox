@@ -2,6 +2,7 @@ import json
 import os
 import re
 from pathlib import Path
+from tests.conftest import stub_servo_yaml
 
 import pytest
 import respx
@@ -135,9 +136,9 @@ def test_check(
         "https://api.opsani.com/accounts/dev.opsani.com/applications/servox/servo",
         status_code=200,
     )
-    result = cli_runner.invoke(servo_cli, "check")
+    result = cli_runner.invoke(servo_cli, "check")    
+    assert result.exit_code == 0, f"exited with non-zero status code (stdout={result.stdout}, stderr={result.stderr})"
     assert request.called
-    assert result.exit_code == 0
     assert re.search("CONNECTOR\\s+STATUS", result.stdout)
 
 @respx.mock
@@ -959,7 +960,6 @@ def test_init_from_scratch(servo_cli: CLI, cli_runner: CliRunner) -> None:
         catch_exceptions=False,
         input="dev.opsani.com/servox\n123456789\nn\ny\n",
     )
-    debug(result.stdout, result.stderr)
     assert result.exit_code == 0
     dotenv = Path(".env")
     assert (
@@ -1002,6 +1002,14 @@ def test_measure(
     cli_runner: CliRunner, servo_cli: Typer, optimizer_env: None, stub_servo_yaml: Path
 ) -> None:
     result = cli_runner.invoke(servo_cli, "measure", catch_exceptions=False)
+    assert result.exit_code == 0
+    assert re.match("METRIC\\s+UNIT\\s+READINGS", result.stdout)
+    assert re.search("Some Metric\\s+rpm\\s+31337.00 \\(just now\\)", result.stdout)
+
+def test_measure_by_connectors_arg(
+    cli_runner: CliRunner, servo_cli: Typer, optimizer_env: None, stub_servo_yaml: Path
+) -> None:
+    result = cli_runner.invoke(servo_cli, "measure --connectors measure", catch_exceptions=False)
     assert result.exit_code == 0
     assert re.match("METRIC\\s+UNIT\\s+READINGS", result.stdout)
     assert re.search("Some Metric\\s+rpm\\s+31337.00 \\(just now\\)", result.stdout)
@@ -1062,8 +1070,6 @@ def test_adjust_multiservo_named(
     assert re.search("dev.opsani.com/multi-servox-2", result.stdout)
 
 
-
-# TODO: add parametertrize for connectors arg
 def test_describe(
     cli_runner: CliRunner, servo_cli: Typer, optimizer_env: None, stub_servo_yaml: Path
 ) -> None:
@@ -1072,6 +1078,16 @@ def test_describe(
     assert re.search("CONNECTOR\\s+COMPONENTS\\s+METRICS", result.stdout)
     assert re.search('measure\\s+throughput \\(rpm\\)', result.stdout)
     assert re.search('\\s+error_rate \\(rpm\\)', result.stdout)
+    assert re.search("adjust\\s+main.cpu=3", result.stdout)
+
+def test_describe_connector(
+    cli_runner: CliRunner, servo_cli: Typer, optimizer_env: None, stub_servo_yaml: Path
+) -> None:
+    result = cli_runner.invoke(servo_cli, "describe adjust", catch_exceptions=False)
+    assert result.exit_code == 0, f"failed with non-zero exit code (stdout={result.stdout}, stderr={result.stderr})"
+    assert re.search("CONNECTOR\\s+COMPONENTS\\s+METRICS", result.stdout)
+    assert re.search('measure\\s+throughput \\(rpm\\)', result.stdout) is None
+    assert re.search('\\s+error_rate \\(rpm\\)', result.stdout) is None
     assert re.search("adjust\\s+main.cpu=3", result.stdout)
 
 def test_describe_multiservo(

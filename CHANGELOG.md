@@ -23,6 +23,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Incorporated [uvloop](https://github.com/MagicStack/uvloop) for faster async
   event loops.
+- New servo configurations can be generated and added to the assembly via
+  `servo generate --append`.
+- New command `servo list` for viewing the active servos in the assembly.
+- Introduced new top-level option `--name`/`-n` for targeting a specific servo
+  in the assembly when running in multi-servo mode.
+- In multi-servo configurations, concurrency can be constrained via the new
+  top-level `--limit` option.
 
 ### Changed
 
@@ -32,6 +39,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - The `servo.assembly.Assembly` class now maintains a collection of servos
   rather than a singleton.
 - The optimizer settings are now part of the configuration.
+- All CLI commands are now multi-servo aware and enabled.
+- The `servo.Runner` class has been split into `servo.AssemblyRunner` and
+  `servo.ServoRunner` to support multi-servo configurations.
+- The Docker image entry point is now multi-servo aware.
+- Servos are now named. The default name is adopted from the Optimizer ID if
+  one is not directly configured.
 
 ### Fixed
 
@@ -39,6 +52,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   reflect pre-release versioning and local work in progress.
 - Scalar `servo.types.DataPoint` objects are now serialized for processing by
   the optimizer service rather than raising an exception.
+- The `ConnectorCLI` class now supports aliased connector instances.
+- Test coverage gaps have been plugged throughout the CLI module.
+- Scalar data points can now be handled by the CLI.
 
 ## [0.8.2] "pass the calamari" - 2020-10-16
 

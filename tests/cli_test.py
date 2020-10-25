@@ -56,10 +56,6 @@ def test_help(cli_runner: CliRunner, servo_cli: Typer) -> None:
     assert "servo [OPTIONS] COMMAND [ARGS]" in result.stdout
 
 
-def test_new(cli_runner: CliRunner, servo_cli: Typer) -> None:
-    """Creates a new servo assembly at [PATH]"""
-
-
 def test_run(cli_runner: CliRunner, servo_cli: Typer) -> None:
     """Run the servo"""
 
@@ -227,7 +223,7 @@ def test_show_components_multiservo(
     assert re.search("COMPONENT\\s+SETTINGS\\s+CONNECTOR", result.stdout)    
     assert re.search("dev.opsani.com/multi-servox-1", result.stdout)
     assert re.search("dev.opsani.com/multi-servox-2", result.stdout)
-    assert re.search("main\\s+cpu=3\\s+adjust", result.stdout)
+    assert re.search("main\\s+cpu=3 RangeSetting\\(range=\\[0..10\\], step=1\\)\\s+adjust", result.stdout)
 
 def test_show_components_multiservo_by_name(
     cli_runner: CliRunner, servo_cli: Typer, stub_multiservo_yaml: Path
@@ -237,7 +233,7 @@ def test_show_components_multiservo_by_name(
     assert re.search("COMPONENT\\s+SETTINGS\\s+CONNECTOR", result.stdout)    
     assert re.search("dev.opsani.com/multi-servox-1", result.stdout) is None
     assert re.search("dev.opsani.com/multi-servox-2", result.stdout)
-    assert re.search("main\\s+cpu=3\\s+adjust", result.stdout)
+    assert re.search("main\\s+cpu=3 RangeSetting\\(range=\\[0..10\\], step=1\\)\\s+adjust", result.stdout)
 
 
 def test_show_events_empty_config_file(

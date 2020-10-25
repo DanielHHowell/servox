@@ -38,10 +38,8 @@ class BackoffConfig:
                     if max_time := backoff_config.max_time:
                         return max_time.total_seconds()
 
-        # fallback to default
-        return 300
-        # if max_time := BackoffConfig.max_time():
-        #     return max_time
+        if max_time := BackoffConfig.max_time(DEFAULT_CONTEXT):
+            return max_time
 
         raise AssertionError("max_time default should never be None")
 
@@ -52,9 +50,7 @@ class BackoffConfig:
                 if backoff_config := servo_config.backoff.get(context, None):
                     return backoff_config.max_tries
 
-        # fallback to default
-        return 5
-        # return BackoffConfig.max_tries()
+        return BackoffConfig.max_tries(DEFAULT_CONTEXT)
 
 class ServoRunner(servo.logging.Mixin, servo.api.Mixin):
     servo: servo.Servo
@@ -369,9 +365,10 @@ class AssemblyRunner(pydantic.BaseModel, servo.logging.Mixin):
                     f"{optimizer.base_url}", bold=True, fg=typer.colors.RED
                 )
                 typer.secho(f"base url: {base_url}")
-            if self.config.servo.proxies:
+            
+            if servo_.config.servo and servo_.config.servo.proxies:
                 proxies = typer.style(
-                    f"{devtools.pformat(self.config.servo.proxies)}",
+                    f"{devtools.pformat(servo_.config.servo.proxies)}",
                     bold=True,
                     fg=typer.colors.CYAN,
                 )

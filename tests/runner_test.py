@@ -5,7 +5,7 @@ import pytest
 import servo
 import servo.runner
 
-from tests.test_helpers import AdjustConnector
+from tests.helpers import AdjustConnector
 
 # import servo.runner
 

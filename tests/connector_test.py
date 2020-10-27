@@ -704,176 +704,194 @@ def test_vegeta_cli_schema_json(
     assert result.exit_code == 0, f"failed with non-zero exit status (stdout={result.stdout}, stderr={result.stderr})"
     schema = json.loads(result.stdout)
     assert schema == {
-        "title": "Vegeta Connector Configuration Schema",
-        "description": "Configuration of the Vegeta connector",
-        "type": "object",
-        "properties": {
-            "description": {
-                "title": "Description",
-                "description": "An optional annotation describing the configuration.",
-                "env_names": [
-                    "VEGETA_DESCRIPTION",
+        'title': 'Vegeta Connector Configuration Schema',
+        'description': 'Configuration of the Vegeta connector',
+        'type': 'object',
+        'properties': {
+            'description': {
+                'title': 'Description',
+                'description': 'An optional annotation describing the configuration.',
+                'env_names': [
+                    'VEGETA_DESCRIPTION',
                 ],
-                "type": "string",
+                'type': 'string',
             },
-            "rate": {
-                "title": "Rate",
-                "description": (
-                    "Specifies the request rate per time unit to issue against the targets. Given in the format of req"
-                    "uest/time unit."
+            'rate': {
+                'title': 'Rate',
+                'description': (
+                    'Specifies the request rate per time unit to issue against the targets. Given in the format of req'
+                    'uest/time unit.'
                 ),
-                "env_names": [
-                    "VEGETA_RATE",
+                'env_names': [
+                    'VEGETA_RATE',
                 ],
-                "type": "string",
+                'type': 'string',
             },
-            "duration": {
-                "title": "Duration",
-                "description": "Specifies the amount of time to issue requests to the targets. This value can be overridden by the server.",
-                "env_names": [
-                    "VEGETA_DURATION",
-                ],
-                "type": "string",
-                "format": "duration",
-                "pattern": "([\\d\\.]+y)?([\\d\\.]+mm)?(([\\d\\.]+w)?[\\d\\.]+d)?([\\d\\.]+h)?([\\d\\.]+m)?([\\d\\.]+s)?([\\d\\.]+ms)?([\\d\\.]+us)?([\\d\\.]+ns)?",
-                "examples": [
-                    "300ms",
-                    "5m",
-                    "2h45m",
-                    "72h3m0.5s",
-                ],
-            },
-            "format": {
-                "$ref": "#/definitions/TargetFormat",
-            },
-            "target": {
-                "title": "Target",
-                "description": (
-                    "Specifies a single formatted Vegeta target to load. See the format option to learn about availabl"
-                    "e target formats. This option is exclusive of the targets option and will provide a target to Veg"
-                    "eta via stdin."
+            'duration': {
+                'title': 'Duration',
+                'description': (
+                    'Specifies the amount of time to issue requests to the targets. This value can be overridden by th'
+                    'e server.'
                 ),
-                "env_names": [
-                    "VEGETA_TARGET",
+                'env_names': [
+                    'VEGETA_DURATION',
                 ],
-                "type": "string",
-            },
-            "targets": {
-                "title": "Targets",
-                "description": (
-                    "Specifies the file from which to read targets. See the format option to learn about available tar"
-                    "get formats. This option is exclusive of the target option and will provide targets to via throug"
-                    "h a file on disk."
+                'type': 'string',
+                'format': 'duration',
+                'pattern': (
+                    '([\\d\\.]+y)?([\\d\\.]+mm)?(([\\d\\.]+w)?[\\d\\.]+d)?([\\d\\.]+h)?([\\d\\.]+m)?([\\d\\.]+s)?([\\d\\.]+ms)?([\\d\\.]'
+                    '+us)?([\\d\\.]+ns)?'
                 ),
-                "env_names": [
-                    "VEGETA_TARGETS",
+                'examples': [
+                    '300ms',
+                    '5m',
+                    '2h45m',
+                    '72h3m0.5s',
                 ],
-                "format": "file-path",
-                "type": "string",
             },
-            "connections": {
-                "title": "Connections",
-                "description": "Specifies the maximum number of idle open connections per target host.",
-                "default": 10000,
-                "env_names": [
-                    "VEGETA_CONNECTIONS",
-                ],
-                "type": "integer",
-            },
-            "workers": {
-                "title": "Workers",
-                "description": (
-                    "Specifies the initial number of workers used in the attack. The workers will automatically increa"
-                    "se to achieve the target request rate, up to max-workers."
+            'format': {
+                'description': (
+                    'Specifies the format of the targets input. Valid values are http and json. Refer to the Vegeta do'
+                    'cs for details.'
                 ),
-                "default": 10,
-                "env_names": [
-                    "VEGETA_WORKERS",
+                'default': 'http',
+                'allOf': [
+                    {
+                        '$ref': '#/definitions/TargetFormat',
+                    },
                 ],
-                "type": "integer",
             },
-            "max_workers": {
-                "title": "Max Workers",
-                "description": (
-                    "The maximum number of workers used to sustain the attack. This can be used to control the concurr"
-                    "ency of the attack to simulate a target number of clients."
+            'target': {
+                'title': 'Target',
+                'description': (
+                    'Specifies a single formatted Vegeta target to load. See the format option to learn about availabl'
+                    'e target formats. This option is exclusive of the targets option and will provide a target to Veg'
+                    'eta via stdin.'
                 ),
-                "env_names": [
-                    "VEGETA_MAX_WORKERS",
+                'env_names': [
+                    'VEGETA_TARGET',
                 ],
-                "type": "integer",
+                'type': 'string',
             },
-            "max_body": {
-                "title": "Max Body",
-                "description": (
-                    "Specifies the maximum number of bytes to capture from the body of each response. Remaining unread"
-                    " bytes will be fully read but discarded."
+            'targets': {
+                'title': 'Targets',
+                'description': (
+                    'Specifies the file from which to read targets. See the format option to learn about available tar'
+                    'get formats. This option is exclusive of the target option and will provide targets to via throug'
+                    'h a file on disk.'
                 ),
-                "default": -1,
-                "env_names": [
-                    "VEGETA_MAX_BODY",
+                'env_names': [
+                    'VEGETA_TARGETS',
                 ],
-                "type": "integer",
+                'format': 'file-path',
+                'type': 'string',
             },
-            "http2": {
-                "title": "Http2",
-                "description": "Specifies whether to enable HTTP/2 requests to servers which support it.",
-                "default": True,
-                "env_names": [
-                    "VEGETA_HTTP2",
+            'connections': {
+                'title': 'Connections',
+                'description': 'Specifies the maximum number of idle open connections per target host.',
+                'default': 10000,
+                'env_names': [
+                    'VEGETA_CONNECTIONS',
                 ],
-                "type": "boolean",
+                'type': 'integer',
             },
-            "keepalive": {
-                "title": "Keepalive",
-                "description": "Specifies whether to reuse TCP connections between HTTP requests.",
-                "default": True,
-                "env_names": [
-                    "VEGETA_KEEPALIVE",
+            'workers': {
+                'title': 'Workers',
+                'description': (
+                    'Specifies the initial number of workers used in the attack. The workers will automatically increa'
+                    'se to achieve the target request rate, up to max-workers.'
+                ),
+                'default': 10,
+                'env_names': [
+                    'VEGETA_WORKERS',
                 ],
-                "type": "boolean",
+                'type': 'integer',
             },
-            "insecure": {
-                "title": "Insecure",
-                "description": "Specifies whether to ignore invalid server TLS certificates.",
-                "default": False,
-                "env_names": [
-                    "VEGETA_INSECURE",
+            'max_workers': {
+                'title': 'Max Workers',
+                'description': (
+                    'The maximum number of workers used to sustain the attack. This can be used to control the concurr'
+                    'ency of the attack to simulate a target number of clients.'
+                ),
+                'env_names': [
+                    'VEGETA_MAX_WORKERS',
                 ],
-                "type": "boolean",
+                'type': 'integer',
             },
-            "reporting_interval": {
-                "title": "Reporting Interval",
-                "description": "How often to report metrics during a measurement cycle.",
-                "default": "15s",
-                "env_names": [
-                    "VEGETA_REPORTING_INTERVAL",
+            'max_body': {
+                'title': 'Max Body',
+                'description': (
+                    'Specifies the maximum number of bytes to capture from the body of each response. Remaining unread'
+                    ' bytes will be fully read but discarded.'
+                ),
+                'default': -1,
+                'env_names': [
+                    'VEGETA_MAX_BODY',
                 ],
-                "type": "string",
-                "format": "duration",
-                "pattern": "([\\d\\.]+y)?([\\d\\.]+mm)?(([\\d\\.]+w)?[\\d\\.]+d)?([\\d\\.]+h)?([\\d\\.]+m)?([\\d\\.]+s)?([\\d\\.]+ms)?([\\d\\.]+us)?([\\d\\.]+ns)?",
-                "examples": [
-                    "300ms",
-                    "5m",
-                    "2h45m",
-                    "72h3m0.5s",
+                'type': 'integer',
+            },
+            'http2': {
+                'title': 'Http2',
+                'description': 'Specifies whether to enable HTTP/2 requests to servers which support it.',
+                'default': True,
+                'env_names': [
+                    'VEGETA_HTTP2',
+                ],
+                'type': 'boolean',
+            },
+            'keepalive': {
+                'title': 'Keepalive',
+                'description': 'Specifies whether to reuse TCP connections between HTTP requests.',
+                'default': True,
+                'env_names': [
+                    'VEGETA_KEEPALIVE',
+                ],
+                'type': 'boolean',
+            },
+            'insecure': {
+                'title': 'Insecure',
+                'description': 'Specifies whether to ignore invalid server TLS certificates.',
+                'default': False,
+                'env_names': [
+                    'VEGETA_INSECURE',
+                ],
+                'type': 'boolean',
+            },
+            'reporting_interval': {
+                'title': 'Reporting Interval',
+                'description': 'How often to report metrics during a measurement cycle.',
+                'default': '15s',
+                'env_names': [
+                    'VEGETA_REPORTING_INTERVAL',
+                ],
+                'type': 'string',
+                'format': 'duration',
+                'pattern': (
+                    '([\\d\\.]+y)?([\\d\\.]+mm)?(([\\d\\.]+w)?[\\d\\.]+d)?([\\d\\.]+h)?([\\d\\.]+m)?([\\d\\.]+s)?([\\d\\.]+ms)?([\\d\\.]'
+                    '+us)?([\\d\\.]+ns)?'
+                ),
+                'examples': [
+                    '300ms',
+                    '5m',
+                    '2h45m',
+                    '72h3m0.5s',
                 ],
             },
         },
-        "required": [
-            "rate",
-            "duration",
+        'required': [
+            'rate',
+            'duration',
         ],
-        "additionalProperties": False,
-        "definitions": {
-            "TargetFormat": {
-                "title": "TargetFormat",
-                "description": "An enumeration.",
-                "enum": [
-                    "http",
-                    "json",
+        'additionalProperties': False,
+        'definitions': {
+            'TargetFormat': {
+                'title': 'TargetFormat',
+                'description': 'An enumeration.',
+                'enum': [
+                    'http',
+                    'json',
                 ],
-                "type": "string",
+                'type': 'string',
             },
         },
     }

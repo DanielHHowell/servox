@@ -1051,7 +1051,16 @@ class TestAssembly:
                             ],
                         },
                         'format': {
-                            '$ref': '#/definitions/TargetFormat',
+                            'description': (
+                                'Specifies the format of the targets input. Valid values are http and json. Refer to the V'
+                                'egeta docs for details.'
+                            ),
+                            'default': 'http',
+                            'allOf': [
+                                {
+                                    '$ref': '#/definitions/TargetFormat',
+                                },
+                            ],
                         },
                         'target': {
                             'title': 'Target',
@@ -1223,7 +1232,16 @@ class TestAssembly:
                             ],
                         },
                         'format': {
-                            '$ref': '#/definitions/TargetFormat',
+                            'description': (
+                                'Specifies the format of the targets input. Valid values are http and json. Refer to the V'
+                                'egeta docs for details.'
+                            ),
+                            'default': 'http',
+                            'allOf': [
+                                {
+                                    '$ref': '#/definitions/TargetFormat',
+                                },
+                            ],
                         },
                         'target': {
                             'title': 'Target',
@@ -1349,7 +1367,7 @@ class TestAssembly:
                     'additionalProperties': False,
                 },
             },
-        }
+        } 
 
     def test_aliased_connectors_get_distinct_env_configuration(
         self, servo_yaml: Path

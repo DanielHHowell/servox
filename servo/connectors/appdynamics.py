@@ -45,7 +45,13 @@ class AppdynamicsConfiguration(servo.BaseConfiguration):
     capture measurements from the AppDynamics metrics server.
     """
 
-    api_key: pydantic.SecretStr
+    username: str
+    """The username for AppDynamics"""
+
+    account: str
+    """The account name for AppDynamics"""
+
+    password: pydantic.SecretStr
     """The API key for accessing the AppDynamics metrics API."""
 
     app_id: str
@@ -113,21 +119,21 @@ class AppdynamicsRequest(pydantic.BaseModel):
 
     @property
     def params(self) -> dict:
-        return {"metric-path":f"{self.query}",
-                "time-range-type":"BETWEEN_TIMES", # Should remain non-configurable
-                "start-time":f"{self.start.timestamp()}",
-                "end-time":f"{self.end.timestamp()}",
-                "rollup": "false" # Prevents aggregation/summarization
+        return {"metric-path": f"{self.query}",
+                "time-range-type": "BETWEEN_TIMES",  # Should remain non-configurable
+                "start-time": f"{self.start.timestamp()}",
+                "end-time": f"{self.end.timestamp()}",
+                "rollup": "false"  # Prevents aggregation/summarization
                 }
 
     @property
     def endpoint(self) -> str:
         return "".join(f"metric-path={self.query}"
-            + f"&time-range-type=BETWEEN_TIMES" # Should remain non-configurable
-            + f"&start-time={self.start.timestamp()}"
-            + f"&end-time={self.end.timestamp()}"
-            + f"rollup=False" # Prevents aggregation/summarization
-        )
+                       + f"&time-range-type=BETWEEN_TIMES"  # Should remain non-configurable
+                       + f"&start-time={self.start.timestamp()}"
+                       + f"&end-time={self.end.timestamp()}"
+                       + f"rollup=False"  # Prevents aggregation/summarization
+                       )
 
 
 class AppdynamicsChecks(servo.BaseChecks):
@@ -158,12 +164,13 @@ class AppdynamicsChecks(servo.BaseChecks):
                 params=appdynamics_request.params,
             ) as client:
                 try:
-                    response = await client.get(f"applications/{self.config.app_id}")
+                    response = await client.get(f"applications/{self.config.app_id}",
+                                                auth=(self.config.username, self.config.password))
                     response.raise_for_status()
                     result = response.json()
                     return f"returned {len(result['metric-datas'])} results"
                 except (httpx.HTTPError, httpcore._exceptions.ReadTimeout, httpcore._exceptions.ConnectError) as error:
-                    self.logger.trace(f"HTTP error encountered during GET {appdynamics_request.url}: {error}")
+                    self.logger.trace(f"HTTP error encountered during GET {appdynamics_request.endpoint}: {error}")
                     raise
 
         return self.config.metrics, query_for_metric
@@ -301,7 +308,8 @@ class AppdynamicsConnector(servo.BaseConnector):
                 params=appdynamics_request.params,
         ) as client:
             try:
-                response = await client.get(f"applications/{self.config.app_id}")
+                response = await client.get(f"applications/{self.config.app_id}",
+                                            auth=(self.config.username, self.config.password))
                 response.raise_for_status()
             except (httpx.HTTPError, httpcore._exceptions.ReadTimeout, httpcore._exceptions.ConnectError) as error:
                 self.logger.trace(f"HTTP error encountered during GET {appdynamics_request.endpoint}: {error}")
@@ -313,21 +321,24 @@ class AppdynamicsConnector(servo.BaseConnector):
         readings = []
 
         for result_dict in data["metric-datas"]:
-            t_ = result_dict["tags"].copy()
-            instance = t_.get("nodename")
-            job = t_.get("type")
-            annotation = " ".join(
-                map(lambda m: "=".join(m), sorted(t_.items(), key=lambda m: m[0]))
-            )
+            # TODO: Optionals (annotations, id, metadata)
+            # t_ = result_dict["tags"].copy()
+            # instance = t_.get("nodename")
+            # job = t_.get("type")
+            # annotation = " ".join(
+            #     map(lambda m: "=".join(m), sorted(t_.items(), key=lambda m: m[0]))
+            # )
 
-            if result_dict["data"]:
+            if result_dict["metricValues"]:
+                value_dict = result_dict["metricValues"]['metric-value']
+
                 readings.append(
                     servo.TimeSeries(
                         metric=metric,
-                        annotation=annotation,
-                        values=result_dict["data"],
-                        id=f"{{instance={instance},job={job}}}",
-                        metadata=dict(instance=instance, job=job),
+                        # annotation=annotation,
+                        values=[value_dict['startTimeinMillis'], value_dict['value']],
+                        # id=f"{{instance={instance},job={job}}}",
+                        #metadata=dict(instance=instance, job=job),
                     )
                 )
         return readings

@@ -79,19 +79,21 @@ class AppdynamicsConfiguration(servo.BaseConfiguration):
             A default configuration for AppdynamicsConnector objects.
         """
         return cls(
-            description="Update the api_key, base_url and metrics to match your AppDynamics configuration",
-            api_key='replace-me',
-            app_id='demo-app',
+            description="Update the username, account, password, app_id, base_url and metrics to match your AppDynamics configuration",
+            username='user-replace',
+            account='account-replace',
+            password='password-replace',
+            app_id='app_id-replace',
             metrics=[
                 AppdynamicsMetric(
                     "throughput",
                     servo.Unit.REQUESTS_PER_MINUTE,
-                    query="avg(ts(appdynamics.apm.overall.calls_per_min, env=foo and app=my-app))",
+                    query="Overall Application Performance|Calls per Minute",
                 ),
                 AppdynamicsMetric(
                     "error_rate",
                     servo.Unit.COUNT,
-                    query="avg(ts(appdynamics.apm.transactions.errors_per_min, env=foo and app=my-app))",
+                    query="Overall Application Performance|Errors per Minute",
                 ),
             ],
             **kwargs,

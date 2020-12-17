@@ -70,6 +70,7 @@ servo = "servo.entry_points:run_cli"
 "vegeta" = "servo.connectors.vegeta:VegetaConnector"
 "kubernetes" = "servo.connectors.kubernetes:KubernetesConnector"
 "prometheus" = "servo.connectors.prometheus:PrometheusConnector"
+"appdynamics" = "servo.connectors.appdynamics:AppdynamicsConnector"
 "wavefront" = "servo.connectors.wavefront:WavefrontConnector"
 
 [build-system]

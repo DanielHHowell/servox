@@ -168,7 +168,7 @@ class AppdynamicsChecks(servo.BaseChecks):
                 params=appdynamics_request.params,
             ) as client:
                 try:
-                    response = await client.get(f"applications/{self.config.app_id}",
+                    response = await client.get(f"applications/{self.config.app_id}/metric-data",
                                                 auth=(self.config.username, self.config.password))
                     response.raise_for_status()
                     result = response.json()
@@ -312,7 +312,7 @@ class AppdynamicsConnector(servo.BaseConnector):
                 params=appdynamics_request.params,
         ) as client:
             try:
-                response = await client.get(f"applications/{self.config.app_id}",
+                response = await client.get(f"applications/{self.config.app_id}/metric-data",
                                             auth=(self.config.username, self.config.password))
                 response.raise_for_status()
             except (httpx.HTTPError, httpcore._exceptions.ReadTimeout, httpcore._exceptions.ConnectError) as error:

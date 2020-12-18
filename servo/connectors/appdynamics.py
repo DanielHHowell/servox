@@ -123,18 +123,20 @@ class AppdynamicsRequest(pydantic.BaseModel):
     def params(self) -> dict:
         return {"metric-path": f"{self.query}",
                 "time-range-type": "BETWEEN_TIMES",  # Should remain non-configurable
-                "start-time": f"{self.start.timestamp()}",
-                "end-time": f"{self.end.timestamp()}",
-                "rollup": "false"  # Prevents aggregation/summarization
+                "start-time": f"{int(self.start.timestamp()*1000)}",
+                "end-time": f"{int(self.end.timestamp()*1000)}",
+                "rollup": "false",  # Prevents aggregation/summarization
+                "output": "JSON"
                 }
 
     @property
     def endpoint(self) -> str:
         return "".join(f"metric-path={self.query}"
                        + f"&time-range-type=BETWEEN_TIMES"  # Should remain non-configurable
-                       + f"&start-time={self.start.timestamp()}"
-                       + f"&end-time={self.end.timestamp()}"
-                       + f"rollup=False"  # Prevents aggregation/summarization
+                       + f"&start-time={int(self.start.timestamp()*1000)}"
+                       + f"&end-time={int(self.end.timestamp()*1000)}"
+                       + f"rollup=false"  # Prevents aggregation/summarization
+                       + f"output=JSON"
                        )
 
 
@@ -317,12 +319,12 @@ class AppdynamicsConnector(servo.BaseConnector):
                 self.logger.trace(f"HTTP error encountered during GET {appdynamics_request.endpoint}: {error}")
                 raise
 
-        data = response.json()
+        data = response.json()[0]
         self.logger.trace(f"Got response data for metric {metric}: {data}")
 
         readings = []
 
-        for result_dict in data["metric-datas"]:
+        for result_dict in data["metricValues"]:
             # TODO: Optionals (annotations, id, metadata)
             # t_ = result_dict["tags"].copy()
             # instance = t_.get("nodename")
@@ -331,14 +333,11 @@ class AppdynamicsConnector(servo.BaseConnector):
             #     map(lambda m: "=".join(m), sorted(t_.items(), key=lambda m: m[0]))
             # )
 
-            if result_dict["metricValues"]:
-                value_dict = result_dict["metricValues"]['metric-value']
-
                 readings.append(
                     servo.TimeSeries(
                         metric=metric,
                         # annotation=annotation,
-                        values=[value_dict['startTimeinMillis'], value_dict['value']],
+                        values=[result_dict['startTimeinMillis'], result_dict['value']],
                         # id=f"{{instance={instance},job={job}}}",
                         #metadata=dict(instance=instance, job=job),
                     )

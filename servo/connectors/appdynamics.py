@@ -51,7 +51,7 @@ class AppdynamicsConfiguration(servo.BaseConfiguration):
     account: str
     """The account name for AppDynamics"""
 
-    password: pydantic.SecretStr
+    password: str
     """The API key for accessing the AppDynamics metrics API."""
 
     app_id: str

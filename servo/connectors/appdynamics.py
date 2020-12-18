@@ -46,11 +46,12 @@ class AppdynamicsConfiguration(servo.BaseConfiguration):
     """
 
     username: str
-    """The username for AppDynamics"""
+    """The username for AppDynamics."""
 
     account: str
-    """The account name for AppDynamics"""
+    """The account name for AppDynamics."""
 
+    # TODO: SecretStr
     password: str
     """The API key for accessing the AppDynamics metrics API."""
 
@@ -108,6 +109,10 @@ class AppdynamicsConfiguration(servo.BaseConfiguration):
     def api_url(self) -> str:
         return f"{self.base_url}{API_PATH}"
 
+    @property
+    def user_auth(self) -> str:
+        return f"{self.username}@{self.account}"
+
 
 class AppdynamicsRequest(pydantic.BaseModel):
     base_url: pydantic.AnyHttpUrl
@@ -131,12 +136,12 @@ class AppdynamicsRequest(pydantic.BaseModel):
 
     @property
     def endpoint(self) -> str:
-        return "".join(f"metric-path={self.query}"
+        return "".join(f"?metric-path={self.query}"
                        + f"&time-range-type=BETWEEN_TIMES"  # Should remain non-configurable
                        + f"&start-time={int(self.start.timestamp()*1000)}"
                        + f"&end-time={int(self.end.timestamp()*1000)}"
-                       + f"rollup=false"  # Prevents aggregation/summarization
-                       + f"output=JSON"
+                       + f"&rollup=false"  # Prevents aggregation/summarization
+                       + f"&output=JSON"
                        )
 
 
@@ -169,10 +174,10 @@ class AppdynamicsChecks(servo.BaseChecks):
             ) as client:
                 try:
                     response = await client.get(f"applications/{self.config.app_id}/metric-data",
-                                                auth=(self.config.username, self.config.password))
+                                                auth=(f"{self.config.user_auth}", self.config.password))
                     response.raise_for_status()
                     result = response.json()
-                    return f"returned {len(result['metric-datas'])} results"
+                    return f"returned {len(result)} results"
                 except (httpx.HTTPError, httpcore._exceptions.ReadTimeout, httpcore._exceptions.ConnectError) as error:
                     self.logger.trace(f"HTTP error encountered during GET {appdynamics_request.endpoint}: {error}")
                     raise
@@ -313,7 +318,7 @@ class AppdynamicsConnector(servo.BaseConnector):
         ) as client:
             try:
                 response = await client.get(f"applications/{self.config.app_id}/metric-data",
-                                            auth=(self.config.username, self.config.password))
+                                            auth=(f"{self.config.user_auth}", self.config.password))
                 response.raise_for_status()
             except (httpx.HTTPError, httpcore._exceptions.ReadTimeout, httpcore._exceptions.ConnectError) as error:
                 self.logger.trace(f"HTTP error encountered during GET {appdynamics_request.endpoint}: {error}")
@@ -325,21 +330,21 @@ class AppdynamicsConnector(servo.BaseConnector):
         readings = []
 
         for result_dict in data["metricValues"]:
-            # TODO: Optionals (annotations, id, metadata)
-            # t_ = result_dict["tags"].copy()
-            # instance = t_.get("nodename")
-            # job = t_.get("type")
-            # annotation = " ".join(
-            #     map(lambda m: "=".join(m), sorted(t_.items(), key=lambda m: m[0]))
-            # )
+            self.logger.info(
+                f"Captured {result_dict['value']} at {result_dict['startTimeInMillis']} for {metric}"
+            )
 
-                readings.append(
-                    servo.TimeSeries(
-                        metric=metric,
-                        # annotation=annotation,
-                        values=[result_dict['startTimeinMillis'], result_dict['value']],
-                        # id=f"{{instance={instance},job={job}}}",
-                        #metadata=dict(instance=instance, job=job),
-                    )
+        for result_dict in data["metricValues"]:
+
+            # TODO: Optionals (annotations, id, metadata)
+
+            readings.append(
+                servo.TimeSeries(
+                    metric=metric,
+                    # annotation=annotation,
+                    values=[(result_dict['startTimeInMillis'], float(result_dict['value']))],
+                    # id=
+                    # metadata=
                 )
+            )
         return readings

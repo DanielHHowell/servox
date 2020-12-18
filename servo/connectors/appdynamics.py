@@ -329,6 +329,7 @@ class AppdynamicsConnector(servo.BaseConnector):
 
         readings = []
 
+        # TEMP: just to see output
         for result_dict in data["metricValues"]:
             self.logger.info(
                 f"Captured {result_dict['value']} at {result_dict['startTimeInMillis']} for {metric}"
@@ -337,14 +338,15 @@ class AppdynamicsConnector(servo.BaseConnector):
         for result_dict in data["metricValues"]:
 
             # TODO: Optionals (annotations, id, metadata)
+            # TODO: List of values in TimeSeries or list of TimeSeries?
 
             readings.append(
                 servo.TimeSeries(
                     metric=metric,
                     # annotation=annotation,
                     values=[(result_dict['startTimeInMillis'], float(result_dict['value']))],
-                    # id=
-                    # metadata=
+                    # id=id
+                    # metadata=metadata
                 )
             )
         return readings

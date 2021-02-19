@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from typing import Type
 
+import kubetest.client
 import pydantic
 import pytest
 from kubernetes_asyncio import client
 from pydantic import BaseModel
 from pydantic.error_wrappers import ValidationError
 
-from servo.api import descriptor_to_adjustments
 from servo.connectors.kubernetes import (
     CPU,
     CanaryOptimization,
@@ -30,9 +30,14 @@ from servo.connectors.kubernetes import (
     Pod,
     ResourceRequirements,
 )
+from servo.errors import AdjustmentRejectedError
 from servo.types import Adjustment
-from tests.test_helpers import *
+from tests.helpers import *
 
+# pytestmark = [
+#     pytest.mark.asyncio,
+#     pytest.mark.event_loop_policy("uvloop"),
+# ]
 
 class TestDNSSubdomainName:
     @pytest.fixture
@@ -397,7 +402,7 @@ class TestDeploymentConfiguration:
             name="testing",
             containers=[],
             replicas=servo.Replicas(min=1, max=4),
-            strategy=OptimizationStrategy.DEFAULT,
+            strategy=OptimizationStrategy.default,
         )
         assert config.yaml(exclude_unset=True) == (
             "name: testing\n"
@@ -414,7 +419,7 @@ class TestDeploymentConfiguration:
             containers=[],
             replicas=servo.Replicas(min=1, max=4),
             strategy=DefaultOptimizationStrategyConfiguration(
-                type=OptimizationStrategy.DEFAULT
+                type=OptimizationStrategy.default
             ),
         )
         assert config.yaml(exclude_unset=True) == (
@@ -433,7 +438,7 @@ class TestDeploymentConfiguration:
             containers=[],
             replicas=servo.Replicas(min=1, max=4),
             strategy=CanaryOptimizationStrategyConfiguration(
-                type=OptimizationStrategy.CANARY, alias="tuning"
+                type=OptimizationStrategy.canary, alias="tuning"
             ),
         )
         assert config.yaml(exclude_unset=True) == (
@@ -460,9 +465,9 @@ class TestDeploymentConfiguration:
         config_dict = yaml.load(config_yaml, Loader=yaml.FullLoader)
         config = DeploymentConfiguration.parse_obj(config_dict)
         assert isinstance(config.strategy, DefaultOptimizationStrategyConfiguration)
-        assert config.strategy.type == OptimizationStrategy.DEFAULT
+        assert config.strategy.type == OptimizationStrategy.default
 
-    def test_strategy_object_canary_parsing(self) -> None:
+    def test_strategy_object_tuning_parsing(self) -> None:
         config_yaml = (
             "containers: []\n"
             "name: testing\n"
@@ -475,10 +480,10 @@ class TestDeploymentConfiguration:
         config_dict = yaml.load(config_yaml, Loader=yaml.FullLoader)
         config = DeploymentConfiguration.parse_obj(config_dict)
         assert isinstance(config.strategy, CanaryOptimizationStrategyConfiguration)
-        assert config.strategy.type == OptimizationStrategy.CANARY
+        assert config.strategy.type == OptimizationStrategy.canary
         assert config.strategy.alias is None
 
-    def test_strategy_object_canary_parsing_with_alias(self) -> None:
+    def test_strategy_object_tuning_parsing_with_alias(self) -> None:
         config_yaml = (
             "containers: []\n"
             "name: testing\n"
@@ -492,14 +497,14 @@ class TestDeploymentConfiguration:
         config_dict = yaml.load(config_yaml, Loader=yaml.FullLoader)
         config = DeploymentConfiguration.parse_obj(config_dict)
         assert isinstance(config.strategy, CanaryOptimizationStrategyConfiguration)
-        assert config.strategy.type == OptimizationStrategy.CANARY
+        assert config.strategy.type == OptimizationStrategy.canary
         assert config.strategy.alias == "tuning"
 
 
 class TestCanaryOptimization:
     @pytest.mark.xfail
     def test_to_components_default_name(self, config) -> None:
-        config.deployments[0].strategy = OptimizationStrategy.CANARY
+        config.deployments[0].strategy = OptimizationStrategy.canary
         optimization = CanaryOptimization.construct(
             name="fiber-http-deployment/opsani/fiber-http:latest-canary",
             target_deployment_config=config.deployments[0],
@@ -509,14 +514,14 @@ class TestCanaryOptimization:
             optimization.target_name == "fiber-http-deployment/opsani/fiber-http:latest"
         )
         assert (
-            optimization.canary_name
+            optimization.tuning_name
             == "fiber-http-deployment/opsani/fiber-http:latest-canary"
         )
 
     @pytest.mark.xfail
     def test_to_components_respects_aliases(self, config) -> None:
         config.deployments[0].strategy = CanaryOptimizationStrategyConfiguration(
-            type=OptimizationStrategy.CANARY, alias="tuning"
+            type=OptimizationStrategy.canary, alias="tuning"
         )
         config.deployments[0].containers[0].alias = "main"
         optimization = CanaryOptimization.construct(
@@ -525,14 +530,14 @@ class TestCanaryOptimization:
             target_container_config=config.deployments[0].containers[0],
         )
         assert optimization.target_name == "main"
-        assert optimization.canary_name == "tuning"
+        assert optimization.tuning_name == "tuning"
 
 
 def test_compare_strategy() -> None:
     config = CanaryOptimizationStrategyConfiguration(
-        type=OptimizationStrategy.CANARY, alias="tuning"
+        type=OptimizationStrategy.canary, alias="tuning"
     )
-    assert config == OptimizationStrategy.CANARY
+    assert config == OptimizationStrategy.canary
 
 
 class TestResourceRequirements:
@@ -612,10 +617,10 @@ class TestContainer:
         [
             (
                 "cpu",
-                ("50m", "250m"),
+                ("100m", "250m"),
                 ...,
                 ...,
-                {"limits": {"cpu": "250m"}, "requests": {"cpu": "50m", "memory": "3G"}},
+                {"limits": {"cpu": "250m"}, "requests": {"cpu": "100m", "memory": "3G"}},
             ),
             (
                 "cpu",
@@ -686,13 +691,13 @@ class TestReplicas:
 class TestCPU:
     @pytest.fixture
     def cpu(self) -> CPU:
-        return CPU(min="100m", max="4000m", step="125m")
+        return CPU(min="125m", max="4000m", step="125m")
 
     def test_parsing(self, cpu) -> None:
         assert {
             "name": "cpu",
             "type": "range",
-            "min": 100,
+            "min": 125,
             "max": 4000,
             "step": 125,
             "value": None,
@@ -705,7 +710,7 @@ class TestCPU:
         assert cpu.__opsani_repr__() == {
             "cpu": {
                 "max": 4.0,
-                "min": 0.1,
+                "min": 0.125,
                 "step": 0.125,
                 "value": 3.0,
                 "type": "range",
@@ -714,17 +719,20 @@ class TestCPU:
         }
 
     def test_resolving_equivalent_units(self) -> None:
-        cpu = CPU(min="100m", max=4.0, step=0.125)
-        assert cpu.min == 100
+        cpu = CPU(min="125m", max=4.0, step=0.125)
+        assert cpu.min == 125
         assert cpu.max == 4000
         assert cpu.step == 125
 
     def test_resources_encode_to_json_human_readable(self, cpu) -> None:
         serialization = json.loads(cpu.json())
-        assert serialization["min"] == "100m"
+        assert serialization["min"] == "125m"
         assert serialization["max"] == "4"
         assert serialization["step"] == "125m"
-        # TODO: Requirements also needs to serialize
+
+    def test_cannot_be_less_than_100m(self) -> None:
+        with pytest.raises(ValueError, match='minimum CPU value allowed is 100m'):
+            CPU(min="50m", max=4.0, step=0.100)
 
 
 class TestMillicore:
@@ -818,123 +826,9 @@ class TestMemory:
         assert serialization["max"] == "4.0GiB"
         assert serialization["step"] == "256.0MiB"
 
-
-@pytest.mark.integration
-class TestKubernetesConnectorIntegration:
-    async def test_describe(self, config):
-        connector = KubernetesConnector(config=config)
-        description = await connector.describe()
-        assert description.get_setting("fiber-http-deployment.cpu").value == 1.0
-        assert description.get_setting("fiber-http-deployment.memory").value == "3G"
-        assert description.get_setting("fiber-http-deployment.replicas").value == 1
-
-    async def test_adjust(self, config, adjustment):
-        connector = KubernetesConnector(config=config)
-
-        description = await connector.adjust(descriptor_to_adjustments(adjustment))
-        debug(description)
-
-    async def test_adjust_memory_on_deployment(self, web_config, adjustment):
-        connector = KubernetesConnector(config=web_config)
-
-        adjustment = Adjustment(
-            component_name="web/main",
-            setting_name="memory",
-            value="700Mi",
-        )
-        description = await connector.adjust([adjustment])
-        debug(description)
-
-        # Get deployment and check the pods
-        # deployment = await Deployment.read("web", "default")
-        # debug(deployment)
-        # debug(deployment.obj.spec.template.spec.containers)
-
-    async def test_read_pod(self, config, adjustment):
-        connector = KubernetesConnector(config=config)
-        await config.load_kubeconfig()
-        # dep = await Deployment.read("opsani-servo", "default")
-        # debug(dep)
-        await Pod.read("web-canary", "default")
-        # debug(pod)
-        # description = await connector.adjust(descriptor_to_adjustments(adjustment))
-        # debug(description)
-
-    ##
-    # Canary Tests
-    async def test_create_canary(self, canary_config, adjustment):
-        await canary_config.load_kubeconfig()
-        connector = KubernetesConnector(config=canary_config)
-        dep = await Deployment.read("web", "default")
-        debug(dep)
-        # description = await connector.startup()
-        # debug(description)
-
-
-async def test_apply_no_changes():
-    # resource_version stays the same and early exits
-    pass
-
-
-async def test_apply_metadata_changes():
-    # Update labels or something that doesn't matter
-    # Detect by never getting a progressing event
-    pass
-
-
-async def test_apply_replica_change():
-    # bump the count, observed_generation goes up
-    # wait for the counts to settle
-    ...
-
-
-async def test_apply_memory_change():
-    # bump the count, observed_generation goes up
-    # wait for the counts to settle
-    ...
-
-
-async def test_apply_cpu_change():
-    # bump the count, observed_generation goes up
-    # wait for the counts to settle
-    ...
-
-
-async def test_apply_unschedulable_memory_request():
-    # bump the count, observed_generation goes up
-    # wait for the counts to settle
-    ...
-
-
-async def test_apply_restart_strategy():
-    # Make sure we can watch a non-rolling update
-    # .spec.strategy specifies the strategy used to replace old Pods by new ones. .spec.strategy.type can be "Recreate" or "RollingUpdate". "RollingUpdate" is the default value.
-    # Recreate Deployment
-    ...
-
-
-# TODO: Put a fiber-http deployment live. Create a config and describe it.
-# TODO: Test talking to multiple namespaces. Test kubeconfig file
-# Test describe an empty config.
-# Version ID checks
-# Timeouts, Encoders, refresh, ready
-# Add watch, test create, read, delete, patch
-# TODO: settlement time, recovery behavior (rollback, delete), "adjust_on"?, restart detection
-# TODO: wait/watch tests with conditionals...
-# TODO: Test cases will be: change memory, change cpu, change replica count.
-# Test setting limit and request independently
-# Detect scheduling error
-
-# TODO: We want to compute progress by looking at observed generation,
-# then watching as all the replicas are updated until the counts match
-# If we never see a progressing condition, then whatever we did
-# did not affect the deployment
-# Handle: CreateContainerError
-
-
-async def test_checks(config: KubernetesConfiguration):
-    await KubernetesChecks.run(config)
-
+    def test_cannot_be_less_than_128MiB(self) -> None:
+        with pytest.raises(ValueError, match='minimum Memory value allowed is 128MiB'):
+            Memory(min="32 MiB", max=4.0, step=268435456)
 
 def test_millicpu():
     class Model(pydantic.BaseModel):
@@ -951,130 +845,306 @@ def test_millicpu():
 
 
 @pytest.fixture
-def canary_config(config) -> KubernetesConfiguration:
-    canary_config = config.copy()
-    for dep in canary_config.deployments:
+def tuning_config(config) -> KubernetesConfiguration:
+    tuning_config = config.copy()
+    for dep in tuning_config.deployments:
         dep.strategy = "canary"
-    return canary_config
-
+    return tuning_config
 
 @pytest.fixture
-def web_config() -> KubernetesConfiguration:
+def namespace() -> str:
+    return "default"
+
+@pytest.fixture
+def config(namespace: str) -> KubernetesConfiguration:
     return KubernetesConfiguration(
-        namespace="default",
+        namespace=namespace,
         deployments=[
             DeploymentConfiguration(
-                name="web",
+                name="fiber-http",
                 replicas=servo.Replicas(
                     min=1,
-                    max=2,
+                    max=4,
                 ),
                 containers=[
                     ContainerConfiguration(
-                        name="main",
-                        cpu=CPU(min="100m", max="800m", step="125m"),
-                        memory=Memory(min="100 Mi", max="0.8 Gi", step="128 Mi"),
+                        name="fiber-http",
+                        cpu=CPU(min="125m", max="875m", step="125m"),
+                        memory=Memory(min="128MiB", max="0.75GiB", step="32MiB"),
                     )
                 ],
             )
         ],
     )
 
+@pytest.mark.integration
+@pytest.mark.clusterrolebinding('cluster-admin')
+@pytest.mark.usefixtures("kubernetes_asyncio_config")
+@pytest.mark.applymanifests("../manifests", files=["fiber-http-opsani-dev.yaml"])
+class TestKubernetesConnectorIntegration:
+    @pytest.fixture(autouse=True)
+    async def _wait_for_manifests(self, kube):
+        kube.wait_for_registered()
+        await asyncio.sleep(0.00001)
 
-@pytest.fixture
-def config() -> KubernetesConfiguration:
-    return KubernetesConfiguration(
-        namespace="default",
-        deployments=[
-            DeploymentConfiguration(
-                name="fiber-http-deployment",
-                replicas=servo.Replicas(
-                    min=1,
-                    max=2,
-                ),
-                containers=[
-                    ContainerConfiguration(
-                        name="opsani/fiber-http:latest",
-                        cpu=CPU(min="100m", max="800m", step="125m"),
-                        memory=Memory(min="100 MiB", max="0.8 GiB", step="128 MiB"),
-                    )
-                ],
-            )
-        ],
-    )
+    @pytest.fixture
+    def namespace(self, kube: kubetest.client.TestClient) -> str:
+        return kube.namespace
+
+    async def test_describe(self, config) -> None:
+        connector = KubernetesConnector(config=config)
+        description = await connector.describe()
+        assert description.get_setting("fiber-http/fiber-http.cpu").value == 125
+        assert description.get_setting("fiber-http/fiber-http.mem").human_readable_value == "128.0MiB"
+        assert description.get_setting("fiber-http/fiber-http.replicas").value == 1
+
+    async def test_adjust_cpu(self, config):
+        connector = KubernetesConnector(config=config)
+        adjustment = Adjustment(
+            component_name="fiber-http/fiber-http",
+            setting_name="cpu",
+            value=".150",
+        )
+        description = await connector.adjust([adjustment])
+        assert description is not None
+        setting = description.get_setting('fiber-http/fiber-http.cpu')
+        assert setting
+        assert setting.value == 150
+
+        # Describe it again and make sure it matches
+        description = await connector.describe()
+        assert description.get_setting("fiber-http/fiber-http.cpu").value == 150
+
+    async def test_adjust_cpu_with_settlement(self, config):
+        connector = KubernetesConnector(config=config)
+        adjustment = Adjustment(
+            component_name="fiber-http/fiber-http",
+            setting_name="cpu",
+            value=".250",
+        )
+        control = servo.Control(settlement='1s')
+        description = await connector.adjust([adjustment], control)
+        assert description is not None
+        setting = description.get_setting('fiber-http/fiber-http.cpu')
+        assert setting
+        assert setting.value == 250
+
+    async def test_adjust_cpu_at_non_zero_container_index(self, config):
+        connector = KubernetesConnector(config=config)
+        adjustment = Adjustment(
+            component_name="fiber-http/fiber-http",
+            setting_name="cpu",
+            value=".250",
+        )
+
+        # Inject a sidecar at index zero
+        deployment = await servo.connectors.kubernetes.Deployment.read('fiber-http', config.namespace)
+        assert deployment, f"failed loading deployment 'fiber-http' in namespace '{config.namespace}'"
+        await deployment.inject_sidecar('opsani-envoy', 'opsani/envoy-proxy:latest', port="8090", service_port=8091, index=0)
+
+        control = servo.Control(settlement='1s')
+        description = await connector.adjust([adjustment], control)
+        assert description is not None
+        setting = description.get_setting('fiber-http/fiber-http.cpu')
+        assert setting
+        assert setting.value == 250
+
+        # Describe it again and make sure it matches
+        description = await connector.describe()
+        assert description.get_setting("fiber-http/fiber-http.cpu").value == 250
+
+    async def test_adjust_memory(self, config):
+        connector = KubernetesConnector(config=config)
+        adjustment = Adjustment(
+            component_name="fiber-http/fiber-http",
+            setting_name="mem",
+            value="700Mi",
+        )
+        description = await connector.adjust([adjustment])
+        assert description is not None
+        setting = description.get_setting('fiber-http/fiber-http.mem')
+        assert setting
+        assert setting.value == 734003200
+
+        # Get deployment and check the pods
+        # deployment = await Deployment.read("web", "default")
+        # debug(deployment)
+        # debug(deployment.obj.spec.template.spec.containers)
+
+    async def test_adjust_deployment_insufficient_resources(self, config: KubernetesConfiguration):
+        config.timeout = "3s"
+        config.deployments[0].containers[0].memory.max = "256Gi"
+        connector = KubernetesConnector(config=config)
+
+        adjustment = Adjustment(
+            component_name="fiber-http/fiber-http",
+            setting_name="mem",
+            value="128Gi",
+        )
+        with pytest.raises(AdjustmentRejectedError) as rejection_info:
+            description = await connector.adjust([adjustment])
+            debug(description)
+
+        assert "Insufficient memory." in str(rejection_info.value)
+
+    async def test_adjust_replicas(self, config):
+        connector = KubernetesConnector(config=config)
+        adjustment = Adjustment(
+            component_name="fiber-http/fiber-http",
+            setting_name="replicas",
+            value="2",
+        )
+        description = await connector.adjust([adjustment])
+        assert description is not None
+        setting = description.get_setting('fiber-http/fiber-http.replicas')
+        assert setting
+        assert setting.value == 2
+
+    async def test_read_pod(self, config, kube) -> None:
+        connector = KubernetesConnector(config=config)
+        pods = kube.get_pods()
+        pod_name = next(iter(pods.keys()))
+        assert pod_name.startswith("fiber-http")
+        pod = await Pod.read(pod_name, kube.namespace)
+        assert pod
+
+    ##
+    # Canary Tests
+    async def test_create_canary(self, tuning_config, namespace: str) -> None:
+        connector = KubernetesConnector(config=tuning_config)
+        dep = await Deployment.read("fiber-http", namespace)
+        debug(dep)
+        # description = await connector.startup()
+        # debug(description)
+
+    async def test_adjust_tuning_insufficient_resources(
+        self,
+        tuning_config: KubernetesConfiguration,
+        namespace
+    ) -> None:
+        await asyncio.sleep(1.0)
+        # debug("SETTING TIMEOUT TO 2s")
+        tuning_config.timeout = "2s"
+        # for deployment_config in tuning_config.deployments:
+        #     deployment_config.timeout = "2s"
+        # debug("SET TIMEOUT TO 2s: ", tuning_config.timeout)
+        connector = KubernetesConnector(config=tuning_config)
+
+        adjustment = Adjustment(
+            component_name="fiber-http/fiber-http-canary",
+            setting_name="mem",
+            value="128Gi", # impossible right?
+        )
+        with pytest.raises(AdjustmentRejectedError) as rejection_info:
+            description = await connector.adjust([adjustment])
+            debug(description)
+
+        assert "Insufficient memory." in str(rejection_info.value)
 
 
-@pytest.fixture
-def adjustment() -> dict:
-    return {
-        "application": {
-            "components": {
-                "fiber-http-deployment": {
-                    "settings": {
-                        "cpu": {
-                            "value": 1.80,  # 0.725,
-                        },
-                        "mem": {
-                            "value": "2.5G",  # 2.25,
-                        },
-                        "replicas": {
-                            "value": 3.0,
-                        },
-                    },
-                },
-            },
-        },
-        "control": {},
-    }
+    async def test_adjust_tuning_cpu_with_settlement(self, tuning_config, namespace, kube):
+        await asyncio.sleep(1.0)
+        connector = KubernetesConnector(config=tuning_config)
+        adjustment = Adjustment(
+            component_name="fiber-http/fiber-http-canary",
+            setting_name="cpu",
+            value=".250",
+        )
+        control = servo.Control(settlement='1s')
+        description = await connector.adjust([adjustment], control)
+        assert description is not None
+        setting = description.get_setting('fiber-http/fiber-http-canary.cpu')
+        assert setting
+        assert setting.value == 250
 
-    # servo/connectors/kubernetes.py:1394 adjust
-    # data:  (dict) len=2
-    # adjustments: [
-    #     Component(
-    #         name='fiber-http-deployment',
-    #         settings=[
-    #             Setting(
-    #                 name='cpu',
-    #                 type=<"range": 'range'>,
-    #                 min=1.0,
-    #                 max=4.0,
-    #                 step=1.0,
-    #                 value=0.725,
-    #                 pinned=False,
-    #             ),
-    #             Setting(
-    #                 name='memory',
-    #                 type=<"range": 'range'>,
-    #                 min=1.0,
-    #                 max=4.0,
-    #                 step=1.0,
-    #                 value=2.25,
-    #                 pinned=False,
-    #             ),
-    #             Setting(
-    #                 name='replicas',
-    #                 type=<"range": 'range'>,
-    #                 min=1.0,
-    #                 max=4.0,
-    #                 step=1.0,
-    #                 value=2.0,
-    #                 pinned=False,
-    #             ),
-    #         ],
-    #         env=None,
-    #         command=None,
-    #     ),
-    # ] (list) len=1
+    async def test_apply_no_changes(self):
+        # resource_version stays the same and early exits
+        pass
 
 
-# event: {
-#         'type': 'ERROR',
-#         'object': {
-#             'kind': 'Status',
-#             'apiVersion': 'v1',
-#             'metadata': {},
-#             'status': 'Failure',
-#             'message': 'too old resource version: 1226459 (1257919)',
-#             'reason': 'Expired',
-#             'code': 410,
-#         },
+    async def test_apply_metadata_changes(self):
+        # Update labels or something that doesn't matter
+        # Detect by never getting a progressing event
+        pass
+
+
+    async def test_apply_replica_change(self):
+        # bump the count, observed_generation goes up
+        # wait for the counts to settle
+        ...
+
+
+    async def test_apply_memory_change(self):
+        # bump the count, observed_generation goes up
+        # wait for the counts to settle
+        ...
+
+
+    async def test_apply_cpu_change(self):
+        # bump the count, observed_generation goes up
+        # wait for the counts to settle
+        ...
+
+
+    async def test_apply_unschedulable_memory_request(self):
+        # bump the count, observed_generation goes up
+        # wait for the counts to settle
+        ...
+
+
+    async def test_apply_restart_strategy(self):
+        # Make sure we can watch a non-rolling update
+        # .spec.strategy specifies the strategy used to replace old Pods by new ones. .spec.strategy.type can be "Recreate" or "RollingUpdate". "RollingUpdate" is the default value.
+        # Recreate Deployment
+        ...
+
+
+    # TODO: Put a fiber-http deployment live. Create a config and describe it.
+    # TODO: Test talking to multiple namespaces. Test kubeconfig file
+    # Test describe an empty config.
+    # Version ID checks
+    # Timeouts, Encoders, refresh, ready
+    # Add watch, test create, read, delete, patch
+    # TODO: settlement time, recovery behavior (rollback, delete), "adjust_on"?, restart detection
+    # TODO: wait/watch tests with conditionals...
+    # TODO: Test cases will be: change memory, change cpu, change replica count.
+    # Test setting limit and request independently
+    # Detect scheduling error
+
+    # TODO: We want to compute progress by looking at observed generation,
+    # then watching as all the replicas are updated until the counts match
+    # If we never see a progressing condition, then whatever we did
+    # did not affect the deployment
+    # Handle: CreateContainerError
+
+    async def test_checks(self, config: KubernetesConfiguration):
+        await KubernetesChecks.run(config)
+
+
+##
+# Rejection Tests using modified deployment
+@pytest.mark.integration
+@pytest.mark.usefixtures("kubernetes_asyncio_config")
+@pytest.mark.applymanifests("../manifests", files=["fiber-http-unready-cmd.yaml"])
+class TestKubernetesConnectorIntegrationUnreadyCmd:
+    @pytest.fixture(autouse=True)
+    def _wait_for_manifests(self, kube):
+        kube.wait_for_registered()
+
+    @pytest.fixture
+    def namespace(self, kube: kubetest.client.TestClient) -> str:
+        return kube.namespace
+
+    async def test_adjust_never_ready(self, config, kube: kubetest.client.TestClient) -> None:
+        # new_dep = kube.load_deployment(abspath("../manifests/fiber-http-opsani-dev.yaml")) Why doesn't this work???? Had to use apply_manifests instead
+        config.timeout = "5s"
+        connector = KubernetesConnector(config=config)
+
+        adjustment = Adjustment(
+            component_name="fiber-http/fiber-http",
+            setting_name="mem",
+            value="128Mi",
+        )
+        with pytest.raises(AdjustmentRejectedError):
+            description = await connector.adjust([adjustment])
+            debug(description)

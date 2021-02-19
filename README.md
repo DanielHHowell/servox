@@ -1,20 +1,19 @@
 # Opsani ServoX
 
 ![Run Tests](https://github.com/opsani/servox/workflows/Run%20Tests/badge.svg)
-[![license](https://img.shields.io/github/license/opsani/servox.svg)](https://github.com/opsani/servox/blob/master/LICENSE)
+[![license](https://img.shields.io/github/license/opsani/servox.svg)](https://github.com/opsani/servox/blob/main/LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/servox.svg)](https://pypi.org/project/servox/)
 [![release](https://img.shields.io/github/release/opsani/servox.svg)](https://github.com/opsani/servox/releases/latest)
 [![GitHub release
 date](https://img.shields.io/github/release-date/opsani/servox.svg)](https://github.com/opsani/servox/releases)
 
-This repository contains the source code of the next generation Opsani Servo
-technology.
+This repository contains the source code of the Opsani Servo agent.
 
-A servo is a deployable unit of software that connects an application or service
-to the Opsani cloud optimization engine in order to identify cost savings and
-performance enhancements by applying machine learning technology. Servos are
-lightweight Python applications and are typically deployed as standalone
-containers or on a Kubernetes cluster.
+The servo connects applications to the Opsani cloud optimization engine
+to identify cost savings and performance enhancements by applying machine
+learning technology. Servos are lightweight Python applications and are
+typically deployed as a container under an orchestration layer such as
+Kubernetes, ECS, or Docker Compose.
 
 Servos are composed of connectors, which provide the core functionality for
 integrating with metrics, orchestration, and load generation systems/utilities.
@@ -31,9 +30,9 @@ any Python package management system should work.
 
 * Clone the repo: `git clone git@github.com:opsani/servox`
 * Install required Python: `cd servox && pyenv install`
-* Install Poetry: `curl -sSL
-  https://raw.githubusercontent.com/python-poetry/poetry/master/get-poetry.py |
+* Install Poetry: `curl -sSL https://raw.githubusercontent.com/python-poetry/poetry/master/get-poetry.py |
   python`
+* Link Poetry with pyenv version: ``poetry env use `cat .python-version` ``
 * Install dependencies: `poetry install`
 * Activate the venv: `poetry shell`
 * Initialize your environment: `servo init`
@@ -41,26 +40,13 @@ any Python package management system should work.
 
 ## Overview
 
-### Project Status
-
-ServoX is currently in beta. Not all Opsani connectors are currently supported.
-The current focus is on Kubernetes, Prometheus, and Vegeta. The connectors are
-bundled within the repository in the `connectors` directory. These packages will
-be migrated out to standalone modules as development progresses.
-
-Putting these caveats aside, ServoX is fairly mature and provides some
-significant advantages and new capabilities above the production Servo module.
-If your target system is supported by the available connectors you may want to
-explore a ServoX deployment.
-
-ServoX will be released as Servo 2.0.0 during the summer of 2020.
-
 ### Getting Started with Opsani
 
 Access to an Opsani optimizer is required to deploy the servo and run the end to
 end integration tests. If you do not currently have access to an Opsani
-environment but are otherwise interested in working with the CO engine and
-Servo, please reach out to us at info@opsani.com and we will get back with you.
+environment but are otherwise interested in working with the optimizer and
+Servo, please reach out to us at [info@opsani.com](mailto:info@opsani.com) and
+we will get back with you.
 
 ### Usage
 
@@ -95,9 +81,11 @@ options under control. The init command will generate one for you.
 #### Displaying Info
 
 ```console
-# View the connectors
+# Display all available connectors
 ❯ servo connectors
 
+# Display instance specific info (requires configuration)
+❯ servo show connectors
 ❯ servo show events
 ❯ servo show components
 ❯ servo show metrics
@@ -258,7 +246,7 @@ class SomeConnector(servo.BaseConnector):
 ```
 
 Each preposition has different capabilities available to it. Before event
-handlers can cancel the execution of the event by raising a `CancelEventError`.
+handlers can cancel the execution of the event by raising a `EventCancelledError`.
 On event handlers can return results that are aggregated and available for
 processing. After event handlers get access to all of the results returned by
 active connectors via the on event handlers.
@@ -281,21 +269,22 @@ class EventExample(servo.BaseConnector):
 The `event` decorator uses the parameters and return type of the decorated
 method to define the signature requirements for on event handlers registered
 against the event. The body of the decorated method must be `...`, `pass`, or an
-async generator that defines setup and tear-down behavior for on event handlers.
+async generator that yields `None` exactly once.
 
 The body of the decorated method can be used to define setup and tear-down
-activities around on event handlers. This allows for common set-up and tear-down
+activities around on event handlers. This allows for common setup and tear-down
 functionality to be defined by the event creator. This is achieved by
 implementing the body of the decorated method as an async generator that yields
 control to the on event handler:
 
 ```python
+from typing import AsyncIterator
 import servo
 
 
 class SetupAndTearDownExample(servo.BaseConnector):
     @servo.event()
-    async def trace(self, url: str) -> str:
+    async def trace(self, url: str) -> AsyncIterator[str]:
         print("Entering event handler...")
         yield
         print("Exited event handler.")
@@ -404,7 +393,7 @@ The bundled connectors are registered and discovered using this mechanism via
 entries in the `pyproject.toml` file under the
 `[tool.poetry.plugins."servo.connectors"]` stanza.
 
-### Advanced Connector Configuration
+### Running Multiple Connector Instances
 
 ServoX is designed to support assemblies that contain an arbitrary number of
 connectors that may or may not be active and enable the use of multiple
@@ -492,6 +481,81 @@ foo:
 Generated servo.yaml
 ```
 
+### Running Multiple Servos
+
+ServoX is capable of running multiple servos within the same assembly and servos
+can be added and removed dynamically at runtime. This is useful for optimizing
+several applications at one time from a single servo deployment to simplify
+operations or more interestingly to support the integration and automation of
+optimization into CI and CD pipelines. For example, it is possible to configure
+the build system to trigger optimization for apps as they head into staging or
+upon emergence into production.
+
+Multi-servo execution mode is straightforward. When the `servo.yaml` config file
+is found to contain multiple documents (delimited by `---`), a servo instance is
+constructed for each entry in the file and added to the assembly. There are
+however a few differences in configuration options.
+
+When multi-servo mode is enabled, the `--optimizer`, `--token`, `--token-file`,
+`--base-url`, and `--url` options are unavailable. The optimizer and
+connectivity configuration must be provided via the `optimizer` stanza within
+each configuration *document* in the config file. The CLI will raise errors if
+these options are utilized with a multi-servo configuration because they are
+ambiguous. This does not preclude a single servo being promoted into a
+multi-servo configuration at runtime -- it is a configuration resolution
+concern.
+
+When running multi-servo, logging is changed to provide context about the servo
+that is active and generating the output. The `servo.current_servo()` method
+returns the active servo at runtime.
+
+Because ServoX is based on `asyncio` and functions as an orchestrator, it is
+capable of managing a large number of optimizations in parallel (we have tested
+into the thousands). Most operations performed are I/O bound and asynchronous
+but the specifics of the connectors used in a multi-servo configuration will
+have a significant impact on the upper bounds of concurrency.
+
+#### Configuring Multi-servo Mode
+
+Basically all that you need to do is use the `---` delimiter to create multiple
+documents within the `servo.yaml` file and configure an `optimizer` within
+each one. For example:
+
+```yaml
+---
+optimizer:
+  id: newco.com/awesome-app1
+  token: 6686e4c3-2c6a-4c28-9c87-b304d7c1427b
+connectors: [vegeta]
+vegeta:
+  duration: 5m
+  rate: 50/1s
+  target: GET https://app1.example.com/
+---
+optimizer:
+  id: newco.com/awesome-app2
+  token: 5d6e004d-cf7b-4121-b66f-d72f0fd44953
+connectors: [vegeta]
+vegeta:
+  duration: 5m
+  rate: 50/1s
+  target: GET https://app2.example.com/
+```
+
+#### Adding & Removing Servos at Runtime
+
+Servos can be added and removed from the assembly at runtime via methods on the
+`servo.Assembly` class:
+
+```python
+import servo
+
+assembly = servo.current_assembly()
+new_servo = servo.Servo()
+assembly.add_servo(new_servo)
+assembly.remove_servo(new_servo)
+```
+
 ### Extending the CLI
 
 Should your connector wish to expose additional commands to the CLI, it can do
@@ -553,6 +617,18 @@ involved, drop us a line via GitHub issues or email to coordinate efforts.
 It is expected that most Open Source contributions will come in the form of new
 connectors. Should you wish to develop a connector, reach out to us at Opsani as
 we have connector developer guides that are in pre-release while ServoX matures.
+
+### Visual Studio Code
+
+The core development team typically works in VSCode. Poetry and VSCode have not
+quite yet become seamlessly integrated. For your convenience, there are a couple
+of Makefile tasks that can simplify configuration:
+
+* `make init` - Initialize a Poetry environment, configure `.vscode/settings.json`,
+  and then run the `servo initialize command.
+* `make vscode` - Export the Poetry environment variables and then open the
+  local working copy within VSCode. The built-in terminal and Python extension
+  should auto-detect the Poetry environment and behave.
 
 ### Pre-commit Hook
 
@@ -640,19 +716,256 @@ Pre-built Docker images are available on
 Docker Hub. The documentation for these images is available within this
 repository at [docs/README-DOCKER_HUB.md](docs/README-DOCKER_HUB.md).
 
+The latest release version is available under the `opsani/servox:latest` tag.
+The `main` development branch is published as the `opsani/servox:edge` tag.
+
+Docker images are built and published to Docker Hub via the
+[Docker GitHub Actions Workflow](.github/workflows/docker.yaml). The workflow
+builds branches, published releases, and the `main` integration branch. Pull
+Requests are not published to Docker Hub because as a publicly available
+repository it could become an attack vector.
+
+Git branches and Docker images have differing naming constraints that impact how
+tag names are computed. For example, Docker tags cannot contain slashes, which
+is a common practice for namespacing branches and tags in Git. As such, slashes
+are converted to hyphens when computing tag names for branches and tags. The
+full naming constraints on Docker image tags is covered in the [`docker
+tag`](https://docs.docker.com/engine/reference/commandline/tag/#extended-description)
+documentation.
+
 Pre-built images are built using BuildKit and can be used as the basis for very
 fast customized builds:
 
 ```console
-❯ DOCKER_BUILDKIT=1 docker build -t servox --build-arg BUILDKIT_INLINE_CACHE=1 --cache-from opsani/servox:latest .
+❯ DOCKER_BUILDKIT=1 docker build -t servox --build-arg BUILDKIT_INLINE_CACHE=1 --cache-from opsani/servox:edge .
 ```
+
+### Switching Python Interpreters
+
+After changing Python interpreter versions you may find that you are "stuck" in
+the existing virtual environment rather than your new desired version.
+
+The problem is that Poetry is linked against the previous environment and needs
+a nudge to select the new interpreter.
+
+The project is bound to a local Python version via the `.python-version` file.
+Tell Poetry to bind against the locally selected environment via:
+``poetry env use `cat .python-version` ``
 
 ## Testing
 
-Tests are implemented using [Pytest](https://docs.pytest.org/en/stable/) and
-live in the `tests` subdirectory. Tests can be executed directly via the `pyenv`
-CLI interface (e.g. `pytest tests`) or via the developer module of the CLI via
-`servo dev test`.
+Tests are implemented using [pytest](https://docs.pytest.org/en/stable/) and
+live in the `tests` subdirectory. Tests can be executed directly via the
+`pytest` CLI interface (e.g., `pytest tests`) or via `make test`, which
+will also compute coverage details.
+
+ServoX is developed with a heavily test-driven workflow and philosophy. The
+framework strives to provide as much support for robust testing as possible
+and make things that you would think are very hard to test programmatically
+very simple. You will want to familiarize yourself with what is available,
+there are tools that can dramatically accelerate your development.
+
+### Test Types
+
+ServoX divides the test suite into three types: **Unit**, **Integration**, and
+**System** tests.
+
+Tests are identified within the suite in two ways:
+
+1. Use of pytest markers to annotate the tests in code.
+2. File location within the tests/ subdirectory.
+
+Unit tests are the default type and make up the bulk of the suite. They either
+exercise code that carries no outside dependencies or utilize isolation
+techniques such as mocks and fakes. They are fast and highly effective for
+validating defined behavior and catching regressions.
+
+Integration tests do not interact with an Opsani Optimizer but do interact with
+external systems and services such as Kubernetes and Prometheus. It is common to
+utilize a local environment (such as Docker, Compose, kind, or Minikube) or a
+dedicated cloud instance to host the services to interact with. But the focus of
+the tests are on implementing and verifying the correct behaviors in a
+supportive environment.
+
+System tests are much like integration tests except that theyn are highly
+prescriptive about the environment they are runnuing in and interact with a real
+optimizer backend as much as is practical. System tests sit at the top of the
+pyramid and it is expected that there are comparatively few of them, buit they
+deliver immense value late in a development cycle when code correctness has been
+established and deployment environments and compatibility concerns come to the
+forefront.
+
+All test types can be implemented within any test module as appropriate by
+annotating the tests with pytest markers:
+
+```python
+import pytest
+
+
+@pytest.mark.integration
+class TestSomething:
+    ...
+```
+
+Tests without a type mark are implicitly designated as unit tests for
+convenience. When multiple type marks are in effect due to hierarchy, the
+closest mark to the test node has precedence.
+
+There are also dedicated directories for integration and system tests at
+`tests/integration` and `tests/system` respectively. These dedicated directories
+are home to cross cutting concerns and scenarios that do not clearly belong to a
+specific module. Tests in these directories that are marked with other types
+will trigger an error.
+
+### Running Tests
+
+A key part of any testing workflow is, well, running tests. pytest provides a
+wealth of capabilities out of the box and these have been further augmented with
+custom pytest-plugins within the suite.
+
+Let's start with the basics: executing `pytest` standalone will execute the unit
+tests in `tests`. Running `pytest --verbose` (or -v) will provide a one test per
+line output which can be easier to follow in slower runs.
+
+Individual files can be run by targetting them by name: `pytest
+tests/connector_test.py`. Individual test functions and container test classes
+within the file (known as nodes in pytest parlance) can be addressed with the
+`tests/path/to/test_something.py::TestSomething::test_name` syntax.
+
+Tests can also be flexibly selected by marks and naming patterns. Invoking
+`pytest -m asyncio -k sleep` will select all tests with the asyncio mark and
+have the word "sleep" in their name. These arguments support a matching syntax,
+look into the pytest docs for details.
+
+The ServoX test types have specific affordances exposed through pytest. Running
+`pytest -T integration` will select and run all integration tests, but deselect
+all other types. The `-T` also known as `--type` flag supports stem matching for
+brevity: `pytest -T u` will select the unit tests.
+
+Because they are slow and require supplemental configuration, integration and
+system tests are skipped by default. They can be enabled via the
+`-I, --integration` and `-S, --system` switches, respectively. Note the difference
+in behavior between the flags: `pytest -I -S` will result in all the tests being
+selected for run whereas `pytest -T sys` targets the system tests exclusively.
+Once the `-I, -S` flags have been used to enable the tests, they can be further
+filtered using `-m` and `-k`. If you are thoughtful about how you name your
+tests and leverage marks when it makes sense, it can become very easy to run
+interesting subsets of the suite.
+
+By default, pytest uses output buffering techniques to capture what is written
+to stdout and stderr. This can become annoying if you are trying to introspect
+state, print debugging info, or get a look at the servo logs. You can suppress
+output capture via the `-s` switch. This is typically only recommended when
+running a small number of tests because the output quickly becomes
+incomprehensible.
+
+If you are working through a set of failures, you can rerun the tests that
+failed on the last run via the `--lf, --last-failed` flag. The `--ff,
+--failed-first` flag will rerun all of the tests, but run the previously failed
+tests first. Similarly, `--nf, --new-first` will run the full suite but
+prioritize new files. The `pytest-picked` plugin provides additional targeting
+based on git working copy status -- running `pytest --picked` will find unstaged
+files to run.
+
+Finally, the `--sw, --stepwise` and `--sw-skip, --stepwise-skip` flags allow you
+to methodically working through a stack of failures by resuming from your last
+failure and then halting at the next one.
+
+### Makefile Tasks
+
+Test automation tasks are centralized into the `Makefile`. There are a number of
+testing  tasks availble including:
+
+* `make test` - Run all available tests.
+* `make test-unit` - Run unit tests.
+* `make test-integration` - Run integration tests.
+* `make test-system` - Run system tests.
+* `make test-coverage` - Run all available tests and generate code coverage
+  report.
+* `make test-kubeconfig` - Generate a kubeconfig file at tests/kubeconfig. See
+  details in [Integration Testing](#integration-testing) below.
+* `make autotest` - Automatically run tests based on filesystem changes.
+
+Testing tasks will run in subprocess distributed mode by default (see below).
+
+### Integration Testing
+
+The test suite includes support for integration tests for running tests against
+remote system components such as a Kubernetes cluster or Prometheus deployment.
+Integration tests require a [kubeconfig](https://kubernetes.io/docs/concepts/configuration/organize-cluster-access-kubeconfig/)
+file at `tests/kubeconfig`.
+
+By convention, the default integration testing cluster is named `kubetest`
+and the `make test-kubeconfig` task is provided to export the cluster details
+from your primary kubeconfig, ensuring isolation.
+
+Interaction with the Kubernetes cluster is supported by the most excellent
+[kubetest](https://kubetest.readthedocs.io/en/latest/) library that provides
+fixtures, markers, and various testing utilities on top of pytest.
+
+To run the integration tests, execute `pytest -I` to enable the
+marker. Integration tests are much slower than the unit test suite
+and should be designed to balance coverage and execution time.
+
+System tests are enabled by running `pytest -S`. Systems tests are very similar
+to integration tests in implementation and performance, but differ in that they
+are prescriptively bound to particular deployment environments and interact with
+an actual
+
+Tests can also be run in cluster by packaging a development container and
+deploying it. The testing harness will detect the in-cluster state and utilize
+the active service account.
+
+### Continuous Integration
+
+The project is configured to run CI on unit tests for all branches, tags, and
+pull requests opened against the repository. CI for integration and system tests
+is constrained by a few rules because they are so resource intensive and may be
+undesirable during experimental developmenmt or integrating multiple branches
+together.
+
+Integration and system tests are run if any of the following conditions are
+met:
+
+* A push is made to `main`.
+* A push is made to a branch prefixed with `release/`.
+* A push is made to a branch prefixed with `bugfix/`.
+* A tag is pushed.
+* A push is made to a branch with an open pull request.
+* The commit message includes `#test:integration` and/or
+  `#test:system`.
+
+The default unit test job that is executed for all pushes generates code
+coverage reports and XML/HTML report artifacts that are attached to the run. The
+integration and system test jobs report on the runtime duration of the tests to
+help identify and manage runtime creep.
+
+The unit, integration, and system test jobs all utilize the `pytest-xdist`
+plugin to split the test suite up across a set of subprocesses. This is
+discussed in the [Distributed Testing](#distributed-testing) section.
+
+Docker images are built and pushed to Docker Hub automatically for all
+pushed refs. Release tags are handled automatically and the
+`opsani/servox:latest` tag is advanced when a new version is released. The
+`main` branch is built and pushed to the `opsani/servox:edge` tag.
+
+#### Distributed Testing
+
+The project is configured to leverage locally distributed test execution by
+default. Servo workloads are heavily I/O bound and spend quite a bit
+of time awaiting data from external services. This characteristic makes tests
+inherently slower but also makes them very well suited for parallel execution.
+The `Makefile` tasks and GitHub actions are configured to leverage a subprocess
+divide & conquer strategy to speed things up.
+
+This functionality is provided by [pytest-xdist](https://docs.pytest.org/en/3.0.1/xdist.html).
+
+### Manifest Templating
+
+All manifests loaded through kubetest support Mustache templating.
+A context dictionary is provided to the template that includes references to all
+Kubernetes resources that have been loaded at render time. The `namespace` and
+`objs` are likely to be the most interesting.
 
 ## License
 

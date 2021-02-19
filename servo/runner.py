@@ -1,85 +1,340 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import colorama
+import random
 import signal
 from typing import Any, Dict, List, Optional
 
 import backoff
 import devtools
 import httpx
+import pydantic
 import typer
 
 import servo
 import servo.api
+import servo.configuration
 import servo.utilities.key_paths
 import servo.utilities.strings
 from servo.types import Adjustment, Control, Description, Duration, Measurement
-
-DEFAULT_CONTEXT = "__default__"
-
-
-class BackoffConfig:
-    """BackoffConfig provides callables for runtime configuration of backoff decorators.
-
-    This implementation relies upon the framework managed context variables to determine
-    which servo is running and retrieve the configuration.
-    """
-
-    @staticmethod
-    def max_time(context: str = DEFAULT_CONTEXT) -> Optional[int]:
-        if servo_config := servo.Servo.current().config.servo:
-            if backoff_config := servo_config.backoff.get(context, None):
-                if max_time := backoff_config.max_time:
-                    return max_time.total_seconds()
-
-        # fallback to default
-        if max_time := BackoffConfig.max_time():
-            return max_time
-
-        raise AssertionError("max_time default should never be None")
-
-    @staticmethod
-    def max_tries(context: str = DEFAULT_CONTEXT) -> Optional[int]:
-        if servo_config := servo.Servo.current().config.servo:
-            if backoff_config := servo_config.backoff.get(context, None):
-                return backoff_config.max_tries
-
-        # fallback to default
-        return BackoffConfig.max_tries()
+from servo.servo import _set_current_servo
 
 
-class Runner(servo.logging.Mixin, servo.api.Mixin):
-    assembly: servo.Assembly
-    connected: bool = False
+class ServoRunner(pydantic.BaseModel, servo.logging.Mixin, servo.api.Mixin):
+    _servo: servo.Servo = pydantic.PrivateAttr(None)
+    _connected: bool = pydantic.PrivateAttr(False)
+    _running: bool = pydantic.PrivateAttr(False)
+    _main_loop_task: Optional[asyncio.Task] = pydantic.PrivateAttr(None)
 
-    def __init__(self, assembly: servo.Assembly) -> None: # noqa: D107
-        self.assembly = assembly
+    class Config:
+        arbitrary_types_allowed = True
+
+    def __init__(self, servo_: servo) -> None: # noqa: D10
+        super().__init__()
+        self._servo = servo_
 
         # initialize default servo options if not configured
         if self.config.servo is None:
             self.config.servo = servo.ServoConfiguration()
 
-        super().__init__()
+    @property
+    def servo(self) -> servo.Servo:
+        return self._servo
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
 
     @property
     def optimizer(self) -> servo.Optimizer:
         return self.servo.optimizer
 
     @property
-    def servo(self) -> servo.Servo:
-        return self.assembly.servo
-
-    @property
-    def config(self) -> servo.BaseAssemblyConfiguration:
+    def config(self) -> servo.BaseServoConfiguration:
         return self.servo.config
 
     @property
     def api_client_options(self) -> Dict[str, Any]:
-        # FIXME: Support for proxies. This is messy. Needs to be cleaned up.
-        # We have unnatural layering because proxies is on config but api is standalone.
+        # Adopt the servo config for driving the API mixin
         return self.servo.api_client_options
 
-    def display_banner(self) -> None:
+    async def describe(self) -> Description:
+        self.logger.info("Describing...")
+
+        aggregate_description = Description.construct()
+        results: List[servo.EventResult] = await self.servo.dispatch_event(servo.Events.describe)
+        for result in results:
+            description = result.value
+            aggregate_description.components.extend(description.components)
+            aggregate_description.metrics.extend(description.metrics)
+
+        return aggregate_description
+
+    async def measure(self, param: servo.MeasureParams) -> Measurement:
+        servo.logger.info(f"Measuring... [metrics={', '.join(param.metrics)}]")
+        servo.logger.trace(devtools.pformat(param))
+
+        aggregate_measurement = Measurement.construct()
+        results: List[servo.EventResult] = await self.servo.dispatch_event(
+            servo.Events.measure, metrics=param.metrics, control=param.control
+        )
+        for result in results:
+            measurement = result.value
+            aggregate_measurement.readings.extend(measurement.readings)
+            aggregate_measurement.annotations.update(measurement.annotations)
+
+        return aggregate_measurement
+
+    async def adjust(
+        self, adjustments: List[Adjustment], control: Control
+    ) -> Description:
+        summary = f"[{', '.join(list(map(str, adjustments)))}]"
+        self.logger.info(f"Adjusting... {summary}")
+        self.logger.trace(devtools.pformat(adjustments))
+
+        aggregate_description = Description.construct()
+        results = await self.servo.dispatch_event(servo.Events.adjust, adjustments)
+        for result in results:
+            description = result.value
+            aggregate_description.components.extend(description.components)
+            aggregate_description.metrics.extend(description.metrics)
+
+        self.logger.success(f"Adjustment completed {summary}")
+        return aggregate_description
+
+    @backoff.on_exception(
+        backoff.expo,
+        httpx.HTTPError,
+        max_time=lambda: servo.current_servo().config.servo.backoff.max_time(),
+        max_tries=lambda: servo.current_servo().config.servo.backoff.max_tries(),
+    )
+    async def exec_command(self) -> servo.api.Status:
+        cmd_response = await self._post_event(servo.api.Events.whats_next, None)
+        self.logger.info(f"What's Next? => {cmd_response.command}")
+        self.logger.trace(devtools.pformat(cmd_response))
+
+        if cmd_response.command == servo.api.Commands.describe:
+            description = await self.describe()
+            self.logger.info(
+                f"Described: {len(description.components)} components, {len(description.metrics)} metrics"
+            )
+            self.logger.trace(devtools.pformat(description))
+
+            status = servo.api.Status.ok(descriptor=description.__opsani_repr__())
+            return await self._post_event(servo.api.Events.describe, status.dict())
+
+        elif cmd_response.command == servo.api.Commands.measure:
+            measurement = await self.measure(cmd_response.param)
+            self.logger.info(
+                f"Measured: {len(measurement.readings)} readings, {len(measurement.annotations)} annotations"
+            )
+            self.logger.trace(devtools.pformat(measurement))
+            param = measurement.__opsani_repr__()
+            return await self._post_event(servo.api.Events.measure, param)
+
+        elif cmd_response.command == servo.api.Commands.adjust:
+            adjustments = servo.api.descriptor_to_adjustments(cmd_response.param["state"])
+            control = Control(**cmd_response.param.get("control", {}))
+
+            try:
+                description = await self.adjust(adjustments, control)
+                status = servo.api.Status.ok(state=description.__opsani_repr__())
+
+                components_count = len(description.components)
+                settings_count = sum(
+                    len(component.settings) for component in description.components
+                )
+                self.logger.info(
+                    f"Adjusted: {components_count} components, {settings_count} settings"
+                )
+            except servo.AdjustmentFailedError as error:
+                status = servo.api.Status.from_error(error)
+                self.logger.error(
+                    f"Adjustment failed: {error}"
+                )
+
+            return await self._post_event(servo.api.Events.adjust, status.dict())
+
+        elif cmd_response.command == servo.api.Commands.sleep:
+            # TODO: Model this
+            duration = Duration(cmd_response.param.get("duration", 120))
+            status = servo.utilities.key_paths.value_for_key_path(cmd_response.param, "data.status", None)
+            reason = servo.utilities.key_paths.value_for_key_path(
+                cmd_response.param, "data.reason", "unknown reason"
+            )
+            msg = f"{status}: {reason}" if status else f"{reason}"
+            self.logger.info(f"Sleeping for {duration} ({msg}).")
+            await asyncio.sleep(duration.total_seconds())
+
+            # Return a status so we have a simple API contract
+            return servo.api.Status(status="ok", message=msg)
+        else:
+            raise ValueError(f"Unknown command '{cmd_response.command.value}'")
+
+    # Main run loop for processing commands from the optimizer
+    async def main_loop(self) -> None:
+        # FIXME: We have seen exceptions from using `with self.servo.current()` crossing contexts
+        _set_current_servo(self.servo)
+
+        while self._running:
+            try:
+                status = await self.exec_command()
+                if status.status == servo.api.OptimizerStatuses.unexpected_event:
+                    self.logger.warning(
+                        f"server reported unexpected event: {status.reason}"
+                    )
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+                self.logger.warning(f"ignoring HTTP timeout error: {error}")
+
+            except Exception as error:
+                self.logger.exception(f"failed with unrecoverable error: {error}")
+                raise error
+
+    def run_main_loop(self) -> None:
+        if self._main_loop_task:
+            self._main_loop_task.cancel()
+
+        self._main_loop_task = asyncio.create_task(self.main_loop(), name="main loop")
+
+    async def run(self) -> None:
+        self._running = True
+
+        _set_current_servo(self.servo)
+        await self.servo.startup()
+        self.logger.info(
+            f"Servo started with {len(self.servo.connectors)} active connectors [{self.optimizer.id} @ {self.optimizer.url or self.optimizer.base_url}]"
+        )
+
+        async def giveup(details) -> None:
+            loop = asyncio.get_event_loop()
+            self.logger.critical("retries exhausted, giving up")
+            asyncio.create_task(self.shutdown(loop))
+
+        try:
+            @backoff.on_exception(
+                backoff.expo,
+                httpx.HTTPError,
+                max_time=lambda: self.config.servo.backoff.max_time(),
+                max_tries=lambda: self.config.servo.backoff.max_tries(),
+                on_giveup=giveup,
+            )
+            async def connect() -> None:
+                self.logger.info("Saying HELLO.", end=" ")
+                await self._post_event(servo.api.Events.hello, dict(agent=servo.api.user_agent()))
+                self._connected = True
+
+
+            self.logger.info(f"Connecting to Opsani Optimizer @ {self.optimizer.api_url}...")
+            await connect()
+        except asyncio.CancelledError:
+            pass
+        except:
+            servo.logger.exception("exception encountered during connect")
+
+        self.run_main_loop()
+
+    async def shutdown(self, *, reason: Optional[str] = None) -> None:
+        """Shutdown the running servo."""
+        try:
+            self._running = False
+            if self.connected:
+                await self._post_event(servo.api.Events.goodbye, dict(reason=reason))
+        except Exception:
+            self.logger.exception(f"Exception occurred during GOODBYE request")
+
+class AssemblyRunner(pydantic.BaseModel, servo.logging.Mixin):
+    assembly: servo.Assembly
+    runners: List[ServoRunner] = []
+    progress_handler: Optional[servo.logging.ProgressHandler] = None
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def __init__(self, assembly: servo.Assembly, **kwargs) -> None:
+        super().__init__(assembly=assembly, **kwargs)
+
+    def _runner_for_servo(self, servo: servo.Servo) -> ServoRunner:
+        for runner in self.runners:
+            if runner.servo == servo:
+                return runner
+
+        raise KeyError(f"no runner was found for the servo: \"{servo}\"")
+
+    def run(self) -> None:
+        """Asynchronously run all servos active within the assembly.
+
+        Running the assembly takes over the current event loop and schedules a `ServoRunner` instance for each servo active in the assembly.
+        """
+        loop = asyncio.get_event_loop()
+
+        # Setup signal handling
+        signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)
+        for s in signals:
+            loop.add_signal_handler(
+                s, lambda s=s: asyncio.create_task(self._shutdown(loop, signal=s))
+            )
+
+        loop.set_exception_handler(self._handle_exception)
+
+        # Setup logging
+        async def _report_progress(**kwargs) -> None:
+            # Forward to the active servo...
+            if servo_ := servo.current_servo():
+                await servo_.report_progress(**kwargs)
+            else:
+                self.logger.warning(
+                    f"failed progress reporting -- no current servo context is established (kwargs={devtools.pformat(kwargs)})"
+                )
+
+        def handle_progress_exception(error: Exception) -> None:
+            # FIXME: This needs to be made multi-servo aware
+            # Restart the main event loop if we get out of sync with the server
+            if isinstance(error, (servo.api.UnexpectedEventError, servo.api.EventCancelledError)):
+                if isinstance(error, servo.api.UnexpectedEventError):
+                    self.logger.error(
+                        "servo has lost synchronization with the optimizer: restarting"
+                    )
+                elif isinstance(error, servo.api.EventCancelledError):
+                    self.logger.error(
+                        "optimizer has cancelled operation in progress: restarting"
+                    )
+
+                tasks = [
+                    t for t in asyncio.all_tasks() if t is not asyncio.current_task()
+                ]
+                self.logger.info(f"Cancelling {len(tasks)} outstanding tasks")
+                [task.cancel() for task in tasks]
+
+                # Restart a fresh main loop
+                runner = self._runner_for_servo(servo.current_servo())
+                runner.run_main_loop()
+
+        self.progress_handler = servo.logging.ProgressHandler(
+            _report_progress, self.logger.warning, handle_progress_exception
+        )
+        self.logger.add(self.progress_handler.sink, catch=True)
+
+        self._display_banner()
+
+        try:
+            for servo_ in self.assembly.servos:
+                servo_runner = ServoRunner(servo_)
+                loop.create_task(servo_runner.run())
+                self.runners.append(servo_runner)
+
+            loop.run_forever()
+
+        finally:
+            loop.close()
+
+    def _display_banner(self) -> None:
+        secho = functools.partial(typer.secho, color=True)
         banner = "\n".join([
             r"   _____                      _  __",
             r"  / ___/___  ______   ______ | |/ /",
@@ -87,7 +342,10 @@ class Runner(servo.logging.Mixin, servo.api.Mixin):
             r" ___/ /  __/ /   | |/ / /_/ /   |",
             r"/____/\___/_/    |___/\____/_/|_|",
         ])
-        typer.secho(banner, fg=typer.colors.BRIGHT_BLUE, bold=True)
+        colors = [colorama.Fore.RED, colorama.Fore.GREEN, colorama.Fore.YELLOW,
+                  colorama.Fore.BLUE, colorama.Fore.MAGENTA, colorama.Fore.CYAN]
+        colored_banner = [random.choice(colors) + char for char in banner]
+        typer.echo(''.join(colored_banner), color=True)
         types = servo.Assembly.all_connector_types()
         types.remove(servo.Servo)
 
@@ -105,221 +363,56 @@ class Runner(servo.logging.Mixin, servo.api.Mixin):
             "initialized", fg=typer.colors.BRIGHT_GREEN, bold=True
         )
 
-        typer.secho(f'{version} "{codename}" {initialized}')
-        typer.secho()
-        typer.secho(f"connectors:  {', '.join(sorted(names))}")
-        typer.secho(
+        secho(f'{version} "{codename}" {initialized}')
+        secho(reset=True)
+        secho(f"connectors:  {', '.join(sorted(names))}")
+        secho(
             f"config file: {typer.style(str(self.assembly.config_file), bold=True, fg=typer.colors.YELLOW)}"
         )
-        id = typer.style(self.optimizer.id, bold=True, fg=typer.colors.WHITE)
-        typer.secho(f"optimizer:   {id}")
-        if self.optimizer.base_url != "https://api.opsani.com/":
-            base_url = typer.style(
-                f"{self.optimizer.base_url}", bold=True, fg=typer.colors.RED
-            )
-            typer.secho(f"base url: {base_url}")
-        if self.config.servo.proxies:
-            proxies = typer.style(
-                f"{devtools.pformat(self.config.servo.proxies)}",
-                bold=True,
-                fg=typer.colors.CYAN,
-            )
-            typer.secho(f"proxies: {proxies}")
-        typer.secho()
 
-    async def describe(self) -> Description:
-        self.logger.info("Describing...")
+        if len(self.assembly.servos) == 1:
+            servo_ = self.assembly.servos[0]
+            optimizer = servo_.optimizer
 
-        aggregate_description = Description.construct()
-        results: List[servo.EventResult] = await self.servo.dispatch_event(servo.Events.DESCRIBE)
-        for result in results:
-            description = result.value
-            aggregate_description.components.extend(description.components)
-            aggregate_description.metrics.extend(description.metrics)
-
-        return aggregate_description
-
-    async def measure(self, param: servo.MeasureParams) -> Measurement:
-        servo.logger.info(f"Measuring... [metrics={', '.join(param.metrics)}]")
-        servo.logger.trace(devtools.pformat(param))
-
-        aggregate_measurement = Measurement.construct()
-        results: List[servo.EventResult] = await self.servo.dispatch_event(
-            servo.Events.MEASURE, metrics=param.metrics, control=param.control
-        )
-        for result in results:
-            measurement = result.value
-            aggregate_measurement.readings.extend(measurement.readings)
-            aggregate_measurement.annotations.update(measurement.annotations)
-
-        return aggregate_measurement
-
-    async def adjust(
-        self, adjustments: List[Adjustment], control: Control
-    ) -> Description:
-        summary = f"[{', '.join(list(map(str, adjustments)))}]"
-        self.logger.info(f"Adjusting... {summary}")
-        self.logger.trace(devtools.pformat(adjustments))
-
-        aggregate_description = Description.construct()
-        results = await self.servo.dispatch_event(servo.Events.ADJUST, adjustments)
-        for result in results:
-            description = result.value
-            aggregate_description.components.extend(description.components)
-            aggregate_description.metrics.extend(description.metrics)
-
-        self.logger.info(f"Adjustment completed {summary}")
-        return aggregate_description
-
-    # backoff and retry for an hour on transient request failures
-    @backoff.on_exception(
-        backoff.expo, httpx.HTTPError, max_time=BackoffConfig.max_time
-    )
-    async def exec_command(self) -> servo.api.Status:
-        cmd_response = await self._post_event(servo.api.Event.WHATS_NEXT, None)
-        self.logger.info(f"What's Next? => {cmd_response.command}")
-        self.logger.trace(devtools.pformat(cmd_response))
-
-        if cmd_response.command == servo.api.Command.DESCRIBE:
-            description = await self.describe()
-            self.logger.info(
-                f"Described: {len(description.components)} components, {len(description.metrics)} metrics"
-            )
-            self.logger.trace(devtools.pformat(description))
-
-            param = dict(descriptor=description.__opsani_repr__(), status="ok")
-            return await self._post_event(servo.api.Event.DESCRIPTION, param)
-
-        elif cmd_response.command == servo.api.Command.MEASURE:
-            measurement = await self.measure(cmd_response.param)
-            self.logger.info(
-                f"Measured: {len(measurement.readings)} readings, {len(measurement.annotations)} annotations"
-            )
-            self.logger.trace(devtools.pformat(measurement))
-            param = measurement.__opsani_repr__()
-            return await self._post_event(servo.api.Event.MEASUREMENT, param)
-
-        elif cmd_response.command == servo.api.Command.ADJUST:
-            adjustments = servo.api.descriptor_to_adjustments(cmd_response.param["state"])
-            control = Control(**cmd_response.param.get("control", {}))
-            description = await self.adjust(adjustments, control)
-
-            reply = {"status": "ok", "state": description.__opsani_repr__()}
-
-            components_count = len(description.components)
-            settings_count = sum(
-                len(component.settings) for component in description.components
-            )
-            self.logger.info(
-                f"Adjusted: {components_count} components, {settings_count} settings"
-            )
-
-            return await self._post_event(servo.api.Event.ADJUSTMENT, reply)
-
-        elif cmd_response.command == servo.api.Command.SLEEP:
-            # TODO: Model this
-            duration = Duration(cmd_response.param.get("duration", 120))
-            status = servo.utilities.key_paths.value_for_key_path(cmd_response.param, "data.status", None)
-            reason = servo.utilities.key_paths.value_for_key_path(
-                cmd_response.param, "data.reason", "unknown reason"
-            )
-            msg = f"{status}: {reason}" if status else f"{reason}"
-            self.logger.info(f"Sleeping for {duration} ({msg}).")
-            await asyncio.sleep(duration.total_seconds())
-
-            # Return a status so we have a simple API contract
-            return servo.api.Status(status="slept", message=msg)
-        else:
-            raise ValueError(f"Unknown command '{cmd_response.command.value}'")
-
-    async def main(self) -> None:
-        # Main run loop for processing commands from the optimizer
-        async def main_loop() -> None:
-            while True:
-                try:
-                    status = await self.exec_command()
-                    if status.status == servo.api.UNEXPECTED_EVENT:
-                        self.logger.warning(
-                            f"server reported unexpected event: {status.reason}"
-                        )
-                except Exception as error:
-                    self.logger.exception(f"failed with unrecoverable error: {error}")
-                    raise error
-
-        def handle_progress_exception(error: Exception) -> None:
-            # Restart the main event loop if we get out of sync with the server
-            if isinstance(error, servo.api.UnexpectedEventError):
-                self.logger.error(
-                    "servo has lost synchronization with the optimizer: restarting operations"
+            id = typer.style(optimizer.id, bold=True, fg=typer.colors.WHITE)
+            secho(f"optimizer:   {id}")
+            if optimizer.base_url != "https://api.opsani.com/":
+                base_url = typer.style(
+                    f"{optimizer.base_url}", bold=True, fg=typer.colors.RED
                 )
+                secho(f"base url: {base_url}")
 
-                tasks = [
-                    t for t in asyncio.all_tasks() if t is not asyncio.current_task()
-                ]
-                self.logger.info(f"Canceling {len(tasks)} outstanding tasks")
-                [task.cancel() for task in tasks]
+            if servo_.config.servo and servo_.config.servo.proxies:
+                proxies = typer.style(
+                    f"{devtools.pformat(servo_.config.servo.proxies)}",
+                    bold=True,
+                    fg=typer.colors.CYAN,
+                )
+                secho(f"proxies: {proxies}")
+        else:
+            servo_count = typer.style(str(len(self.assembly.servos)), bold=True, fg=typer.colors.WHITE)
+            secho(f"servos:   {servo_count}")
 
-                # Restart a fresh main loop
-                asyncio.create_task(main_loop(), name="main loop")
+        secho(reset=True)
 
-        # Setup logging
-        self.progress_handler = servo.logging.ProgressHandler(
-            self.servo.report_progress, self.logger.warning, handle_progress_exception
-        )
-        self.logger.add(self.progress_handler.sink, catch=True)
-
-        self.logger.info(
-            f"Servo started with {len(self.servo.connectors)} active connectors [{self.optimizer.id} @ {self.optimizer.url or self.optimizer.base_url}]"
-        )
-
-        async def giveup(details) -> None:
-            loop = asyncio.get_event_loop()
-            self.logger.critical("retries exhausted, giving up")
-            asyncio.create_task(self.shutdown(loop))
-
-        try:
-
-            @backoff.on_exception(
-                backoff.expo,
-                httpx.HTTPError,
-                max_time=lambda: BackoffConfig.max_time("connect"),
-                on_giveup=giveup,
-            )
-            async def connect() -> None:
-                self.logger.info("Saying HELLO.", end=" ")
-                await self._post_event(servo.api.Event.HELLO, dict(agent=self.USER_AGENT))
-                self.connected = True
-
-            self.logger.info("Dispatching startup event...")
-            await self.servo.startup()
-
-            self.logger.info(f"Connecting to Opsani Optimizer @ {self.optimizer.api_url}...")
-            await connect()
-        except:
-            pass
-
-        await asyncio.create_task(main_loop(), name="main loop")
-
-    async def shutdown(self, loop, signal=None):
+    async def _shutdown(self, loop, signal=None):
         if signal:
             self.logger.info(f"Received exit signal {signal.name}...")
 
-        try:
-            if self.connected:
-                reason = signal.name if signal else "shutdown"
-                await self._post_event(servo.api.Event.GOODBYE, dict(reason=reason))
-        except Exception:
-            self.logger.exception(f"Exception occurred during GOODBYE request")
+        reason = signal.name if signal else "shutdown"
+        self.logger.info(f"Shutting down {len(self.runners)} running servos...")
+        for runner in self.runners:
+            await runner.shutdown(reason=reason)
 
         self.logger.info("Dispatching shutdown event...")
-        await self.servo.shutdown()
+        await self.assembly.shutdown()
         await self.progress_handler.shutdown()
 
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
 
         [task.cancel() for task in tasks]
 
-        self.logger.info(f"Canceling {len(tasks)} outstanding tasks")
+        self.logger.info(f"Cancelling {len(tasks)} outstanding tasks")
         await asyncio.gather(*tasks, return_exceptions=True)
 
         self.logger.info("Servo shutdown complete.")
@@ -327,30 +420,10 @@ class Runner(servo.logging.Mixin, servo.api.Mixin):
 
         loop.stop()
 
-    def handle_exception(self, loop: asyncio.AbstractEventLoop, context: dict) -> None:
+    def _handle_exception(self, loop: asyncio.AbstractEventLoop, context: dict) -> None:
         self.logger.error(f"asyncio exception handler triggered with context: {context}")
 
         self.logger.critical(
             "Shutting down due to unhandled exception in asyncio event loop..."
         )
-        asyncio.create_task(self.shutdown(loop))
-
-    def run(self) -> None:
-        self.display_banner()
-
-        # Setup async event loop
-        loop = asyncio.get_event_loop()
-
-        signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)
-        for s in signals:
-            loop.add_signal_handler(
-                s, lambda s=s: asyncio.create_task(self.shutdown(loop, signal=s))
-            )
-
-        loop.set_exception_handler(self.handle_exception)
-
-        try:
-            loop.create_task(self.main())
-            loop.run_forever()
-        finally:
-            loop.close()
+        asyncio.create_task(self._shutdown(loop))

@@ -8,6 +8,8 @@ integration with arbitrary systems via the connector module.
 from __future__ import annotations
 
 import abc
+import contextlib
+import contextvars
 import importlib
 import re
 from typing import Any, ClassVar, Generator, Iterable, Optional, Set, Tuple, Type, get_type_hints
@@ -19,14 +21,27 @@ import pydantic
 import servo.api
 import servo.events
 import servo.logging
+import servo.pubsub
 import servo.repeating
 import servo.utilities.associations
 from servo.types import *
 
 __all__ = [
     "BaseConnector",
+    "current_connector",
     "metadata",
 ]
+
+
+_current_context_var = contextvars.ContextVar("servox.current_connector", default=None)
+
+def current_connector() -> Optional["BaseConnector"]:
+    """Return the active connector for the current execution context.
+
+    The value is managed by a contextvar and is concurrency safe.
+    """
+    return _current_context_var.get(None)
+
 
 _connector_subclasses: Set[Type["BaseConnector"]] = set()
 
@@ -37,6 +52,7 @@ class BaseConnector(
     servo.api.Mixin,
     servo.events.Mixin,
     servo.logging.Mixin,
+    servo.pubsub.Mixin,
     servo.repeating.Mixin,
     pydantic.BaseModel,
     abc.ABC,
@@ -92,8 +108,12 @@ class BaseConnector(
     """
 
     config: servo.configuration.BaseConfiguration
-    """Configuration for the connector set explicitly or loaded from a config file.
-    """
+    """Configuration for the connector set explicitly or loaded from a config file."""
+
+    _servo_config: servo.configuration.ServoConfiguration = pydantic.PrivateAttr(
+        default_factory=lambda: servo.configuration.ServoConfiguration()
+    )
+    """Shared configuration from our parent Servo instance."""
 
     ##
     # Validators
@@ -186,8 +206,22 @@ class BaseConnector(
         )
 
     @property
-    def api_client_options(self) -> Dict[str, Any]: # noqa: D102
-        return self.__dict__.get("api_client_options", super().api_client_options)
+    def api_client_options(self) -> Dict[str, Any]: # noqa: D105
+        if not self.optimizer:
+            raise RuntimeError(
+                f"cannot construct API client: optimizer is not configured"
+            )
+        return {
+            "base_url": self.optimizer.api_url,
+            "headers": {
+                "Authorization": f"Bearer {self.optimizer.token}",
+                "User-Agent": servo.api.user_agent(),
+                "Content-Type": "application/json",
+            },
+            "proxies": self._servo_config.proxies,
+            "timeout": self._servo_config.timeouts,
+            "verify": self._servo_config.ssl_verify,
+        }
 
     @property
     def logger(self) -> "loguru.Logger":
@@ -195,6 +229,16 @@ class BaseConnector(
         # NOTE: We support the explicit connector ref and the context var so
         # that logging is attributable outside of an event whenever possible
         return super().logger.bind(connector=self)
+
+    @contextlib.contextmanager
+    def current(self):
+        """A context manager that sets the current connector context."""
+        try:
+          token = _current_context_var.set(self)
+          yield self
+
+        finally:
+            _current_context_var.reset(token)
 
 
 def metadata(
@@ -316,7 +360,7 @@ def _routes_for_connectors_descriptor(connectors) -> Dict[str, "BaseConnector"]:
     elif isinstance(connectors, str):
         # NOTE: Special case. When we are invoked with a string it is typically an env var
         try:
-            decoded_value = BaseAssemblyConfiguration.__config__.json_loads(connectors)  # type: ignore
+            decoded_value = servo.configuration.BaseServoConfiguration.__config__.json_loads(connectors)  # type: ignore
         except ValueError as e:
             raise ValueError(f'error parsing JSON for "{connectors}"') from e
 
@@ -336,7 +380,7 @@ def _routes_for_connectors_descriptor(connectors) -> Dict[str, "BaseConnector"]:
             elif connector_class := _connector_class_from_string(connector):
                 connector_routes[connector_class.__default_name__] = connector_class
             else:
-                raise ValueError(f"Missing validation for value {connector}")
+                raise ValueError(f"no connector found for the identifier \"{connector}\"")
 
         return connector_routes
 

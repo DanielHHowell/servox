@@ -1,24 +1,27 @@
 import asyncio
+import itertools
 import json
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import pytest
 import httpx
+import pytest
+import pytest_mock
 import respx
 import yaml
 from pydantic import Extra, ValidationError
 from typer.testing import CliRunner
 
+import servo as servox
 from servo import BaseConnector, Duration, License, Maturity, Optimizer, Version
 from servo.cli import ServoCLI
-from servo.configuration import BaseAssemblyConfiguration, BaseConfiguration
+from servo.configuration import BaseConfiguration, BaseServoConfiguration
 from servo.connector import _connector_subclasses
 from servo.connectors.vegeta import TargetFormat, VegetaConfiguration, VegetaConnector
-from servo.events import EventContext, Preposition, _connector_context_var, _events, create_event, event
+from servo.events import EventContext, Preposition, _events, create_event, event
 from servo.logging import ProgressHandler, reset_to_defaults
-from tests.test_helpers import *
+from tests.helpers import *
 
 
 class TestOptimizer:
@@ -47,7 +50,7 @@ class TestOptimizer:
         assert e.value.errors()[0]["loc"] == ("app_name",)
         assert (
             e.value.errors()[0]["msg"]
-            == 'string does not match regex "^[a-z\\-\\.0-9]{3,64}$"'
+            == 'string does not match regex "^[a-zA-Z\\_\\-\\.0-9]{1,64}$"'
         )
 
     def test_token_validation(self) -> None:
@@ -70,6 +73,7 @@ class TestOptimizer:
             (None, "https://api.opsani.com/accounts/example.com/applications/my-app/"),
             ("http://localhost:1234", "http://localhost:1234"),
         ],
+        ids=(f"target-{i}" for i in itertools.count())
     )
     def test_api_url(self, url, expected_api_url) -> None:
         optimizer = Optimizer(id="example.com/my-app", token="123456", url=url)
@@ -79,7 +83,7 @@ class TestOptimizer:
 class TestLicense:
     def test_license_from_string(self):
         l = License.from_str("MIT")
-        assert l == License.MIT
+        assert l == License.mit
 
     def test_license_from_string_invalid_raises(self):
         with pytest.raises(NameError) as e:
@@ -90,7 +94,7 @@ class TestLicense:
 class TestMaturity:
     def test_maturity_from_string(self):
         l = Maturity.from_str("Stable")
-        assert l == Maturity.STABLE
+        assert l == Maturity.stable
 
     def test_license_from_string_invalid_raises(self):
         with pytest.raises(NameError) as e:
@@ -252,7 +256,7 @@ class TestVegetaConfiguration:
         s = VegetaConfiguration(
             rate="0", format="http", target="GET http://example.com"
         )
-        assert s.format == TargetFormat.HTTP
+        assert s.format == TargetFormat.http
 
     def test_validate_target_with_json_format(self) -> None:
         s = VegetaConfiguration(
@@ -260,7 +264,7 @@ class TestVegetaConfiguration:
             format="json",
             target='{ "url": "http://example.com", "method": "GET" }',
         )
-        assert s.format == TargetFormat.JSON
+        assert s.format == TargetFormat.json
 
     def test_validate_target_http_doesnt_match_schema(self) -> None:
         with pytest.raises(ValidationError) as e:
@@ -325,6 +329,7 @@ class TestVegetaConfiguration:
                 "X-Account-ID: 99\n"
             ),
         ],
+        ids=(f"target-{i}" for i in itertools.count())
     )
     def test_validate_target_http_valid_cases(self, http_target):
         s = VegetaConfiguration(
@@ -391,6 +396,7 @@ class TestVegetaConfiguration:
                 "invalid target: JUMP http://goku:9090/things",
             ],
         ],
+        ids=(f"target-{i}" for i in itertools.count())
     )
     def test_validate_target_http_invalid_cases(self, http_target, error_message):
         with pytest.raises(ValidationError) as e:
@@ -637,11 +643,11 @@ def test_vegeta_homepage() -> None:
 
 
 def test_vegeta_license() -> None:
-    assert VegetaConnector.license == License.APACHE2
+    assert VegetaConnector.license == License.apache2
 
 
 def test_vegeta_maturity() -> None:
-    assert VegetaConnector.maturity == Maturity.STABLE
+    assert VegetaConnector.maturity == Maturity.stable
 
 
 ## Vegeta CLI tests
@@ -669,7 +675,7 @@ def test_env_variable_prefixing() -> None:
     schemas = [
         BaseConfiguration.schema(),
         VegetaConfiguration.schema(),
-        BaseAssemblyConfiguration.schema(),
+        BaseServoConfiguration.schema(),
     ]
     # NOTE: popping the env_names without copying is a mistake you will only make once
     values = list(
@@ -688,7 +694,7 @@ def test_vegeta_cli_schema_json(
     servo_cli: ServoCLI, cli_runner: CliRunner, optimizer_env: None
 ) -> None:
     result = cli_runner.invoke(servo_cli, "schema vegeta")
-    assert result.exit_code == 0
+    assert result.exit_code == 0, f"failed with non-zero exit status (stdout={result.stdout}, stderr={result.stderr})"
     schema = json.loads(result.stdout)
     assert schema == {
         'title': 'Vegeta Connector Configuration Schema',
@@ -720,6 +726,9 @@ def test_vegeta_cli_schema_json(
                     'cs for details.'
                 ),
                 'default': 'http',
+                'env_names': [
+                    'VEGETA_FORMAT',
+                ],
                 'allOf': [
                     {
                         '$ref': '#/definitions/TargetFormat',
@@ -857,7 +866,6 @@ def test_vegeta_cli_schema_json(
             },
         },
     }
-
 
 @pytest.mark.xfail
 def test_vegeta_cli_schema_text(servo_cli: ServoCLI, cli_runner: CliRunner) -> None:
@@ -1266,7 +1274,7 @@ class TestConnectorEvents:
 
         @event(handler=True)
         async def get_event_context(self) -> Optional[EventContext]:
-            return self.current_event
+            return servo.current_event()
 
         class Config:
             extra = Extra.allow
@@ -1297,7 +1305,7 @@ class TestConnectorEvents:
 
             class NonAsyncEvent(TestConnectorEvents.FakeConnector):
                 @event()
-                def invalid_event(self):
+                def some_other_invalid_event(self):
                     pass
 
         assert e
@@ -1335,7 +1343,7 @@ class TestConnectorEvents:
         connector = TestConnectorEvents.AnotherFakeConnector(config=config)
         _enter = mocker.spy(connector, "_enter")
         _exit = mocker.spy(connector, "_exit")
-        results = await connector.run_event_handlers(event, Preposition.ON)
+        results = await connector.run_event_handlers(event, Preposition.on)
         assert results[0].value == 13
         _enter.assert_called_once()
         _exit.assert_called_once()
@@ -1366,7 +1374,7 @@ class TestConnectorEvents:
         config = BaseConfiguration.construct()
         connector = TestConnectorEvents.FakeConnector(config=config)
         event = _events["example_event"]
-        results = await connector.run_event_handlers(event, Preposition.ON)
+        results = await connector.run_event_handlers(event, Preposition.on)
         assert results is not None
         result = results[0]
         assert result.event.name == "example_event"
@@ -1377,7 +1385,7 @@ class TestConnectorEvents:
         config = BaseConfiguration.construct()
         connector = TestConnectorEvents.FakeConnector(config=config)
         event = _events["get_event_context"]
-        results = await connector.run_event_handlers(event, Preposition.ON)
+        results = await connector.run_event_handlers(event, Preposition.on)
         assert results is not None
         result = results[0]
         assert result.event.name == "get_event_context"
@@ -1385,7 +1393,7 @@ class TestConnectorEvents:
         assert result.value
         assert result.value.event == event
         assert result.value.preposition is not None
-        assert result.value.preposition == Preposition.ON
+        assert result.value.preposition == Preposition.on
         assert result.value.created_at.replace(
             microsecond=0
         ) == result.value.created_at.replace(microsecond=0)
@@ -1394,7 +1402,7 @@ class TestConnectorEvents:
         config = BaseConfiguration.construct()
         connector = TestConnectorEvents.FakeConnector(config=config)
         with pytest.raises(ValueError) as e:
-            await connector.run_event_handlers("unknown_event", Preposition.ON)
+            await connector.run_event_handlers("unknown_event", Preposition.on)
         assert e
         assert str(e.value) == "event must be an Event object, got str"
 
@@ -1425,10 +1433,75 @@ class TestConnectorEvents:
         assert result.connector == connector
         assert result.value == 12345
 
+    async def test_event_dispatch_context_manager(self, mocker: pytest_mock.MockFixture) -> None:
+        config = BaseConfiguration.construct()
+        connector = TestConnectorEvents.FakeConnector(config=config)
+        messages = set()
+
+        async with connector.dispatch_event(_events["example_event"]) as event:
+            @event.subscribe
+            async def _subscriber(message: servo.pubsub.Message) -> None:
+                messages.add(f"Decorator Message: {message.text}")
+
+            event.subscribe(lambda message: messages.add(f"Lambda Message: {message.text}"))
+
+            async def _iterator() -> None:
+                async for message in event.channel:
+                    messages.add(f"Iterator Message: {message.text}")
+
+            async def _context_manager() -> None:
+                async with event.subscribe() as subscription:
+                    async for message, _ in subscription:
+                        messages.add(f"Context Manager Message: {message.text}")
+
+            async def _iterate_event() -> None:
+                async for message in event:
+                    messages.add(f"Iterate Event Message: {message.text}")
+
+            async def _poke() -> None:
+                for i in range(5):
+                    await event.channel.publish(servo.pubsub.Message(text=f"Message {i}"))
+
+            connector.pubsub_exchange.start()
+            await asyncio.gather(
+                _poke(),
+                _iterator(),
+                event(),
+                _context_manager(),
+                _iterate_event()
+            )
+            assert messages == {'Decorator Message: Message 0',
+                'Decorator Message: Message 1',
+                'Decorator Message: Message 2',
+                'Decorator Message: Message 3',
+                'Decorator Message: Message 4',
+                'Iterator Message: Message 0',
+                'Iterator Message: Message 1',
+                'Iterator Message: Message 2',
+                'Iterator Message: Message 3',
+                'Iterator Message: Message 4',
+                'Lambda Message: Message 0',
+                'Lambda Message: Message 1',
+                'Lambda Message: Message 2',
+                'Lambda Message: Message 3',
+                'Lambda Message: Message 4',
+                'Context Manager Message: Message 0',
+                'Context Manager Message: Message 1',
+                'Context Manager Message: Message 2',
+                'Context Manager Message: Message 3',
+                'Context Manager Message: Message 4',
+                'Iterate Event Message: Message 0',
+                'Iterate Event Message: Message 1',
+                'Iterate Event Message: Message 2',
+                'Iterate Event Message: Message 3',
+                'Iterate Event Message: Message 4'
+            }
+
+
     def test_event_context_str_comparison(self) -> None:
         assert _events is not None
         event = _events["example_event"]
-        context = EventContext(event=event, preposition=Preposition.ON)
+        context = EventContext(event=event, preposition=Preposition.on)
         assert context == "example_event"
         assert context == "on:example_event"
         assert context != "before:example_event"
@@ -1444,29 +1517,35 @@ async def test_logging() -> None:
         optimizer=Optimizer(id="example.com/my-app", token="123456"),
         config=BaseConfiguration(),
     )
-    _connector_context_var.set(connector)
-    handler = ProgressHandler(connector.report_progress, lambda m: print(m))
-    connector.logger.add(handler.sink)
-    args = dict(operation="ADJUST", started_at=datetime.now())
-    connector.logger.info("First", progress=0, **args)
-    await asyncio.sleep(0.00001)
-    connector.logger.info("Second", progress=25.0, **args)
-    await asyncio.sleep(0.00001)
-    connector.logger.info("Third", progress=50, **args)
-    await asyncio.sleep(0.00001)
-    connector.logger.info("Fourth", progress=100.0, **args)
-    await asyncio.sleep(0.00001)
 
-    await connector.logger.complete()
-    await handler.shutdown()
-    reset_to_defaults()
-    assert request.called
-    assert request.calls.call_count == 3
+    config = servox.configuration.ServoConfiguration(proxies="http://localhost:1234", ssl_verify=False)
+    optimizer = Optimizer("test.com/foo", token="12345")
+    servo = servox.Servo(config={"servo": config}, optimizer=optimizer, connectors=[])
 
-    # Parse the JSON sent in the request body and verify we hit 100%
-    last_progress_report = json.loads(respx.calls.last.request.content)
-    assert last_progress_report["event"] == "ADJUST"
-    assert last_progress_report["param"]["progress"] == 100.0
+    with servo.current():
+        with connector.current():
+            handler = ProgressHandler(connector.report_progress, lambda m: print(m))
+            connector.logger.add(handler.sink)
+            args = dict(operation="ADJUST", started_at=datetime.datetime.now())
+            connector.logger.info("First", progress=0, **args)
+            await asyncio.sleep(0.00001)
+            connector.logger.info("Second", progress=25.0, **args)
+            await asyncio.sleep(0.00001)
+            connector.logger.info("Third", progress=50, **args)
+            await asyncio.sleep(0.00001)
+            connector.logger.info("Fourth", progress=99.9, **args)
+            await asyncio.sleep(0.00001)
+
+            await connector.logger.complete()
+            await handler.shutdown()
+            reset_to_defaults()
+            assert request.called
+            assert request.calls.call_count == 3  # 100% is skipped
+
+            # Parse the JSON sent in the request body and verify we hit 100%
+            last_progress_report = json.loads(respx.calls.last.request.content)
+            assert last_progress_report["event"] == "ADJUST"
+            assert last_progress_report["param"]["progress"] == 99.9
 
 
 def test_report_progress_numeric() -> None:
@@ -1495,3 +1574,48 @@ def test_logger_binds_connector_name() -> None:
     logger.info("Testing")
     record = messages[0].record
     assert record["extra"]["connector"].name == "measure"
+
+class TestPubSub:
+    class PubSubConnector(MeasureConnector):
+        async def _create_publisher(self, *, name: Optional[str] = None) -> None:
+            @self.publish("metrics", name=name, every="0.1ms")
+            async def _publisher(publisher: servo.pubsub.Publisher) -> None:
+                await publisher(servo.pubsub.Message(json={"throughput": "31337rps"}))
+
+        async def _create_subscriber(self, callback, *, name: Optional[str] = None) -> None:
+            @self.subscribe("metrics", name=name)
+            async def _subscriber(message: servo.pubsub.Message, channel: servo.pubsub.Channel) -> None:
+                callback(message, channel)
+
+    @pytest.fixture
+    async def connector(self) -> 'TestPubSub.PubSubConnector':
+        pubsub_connector = TestPubSub.PubSubConnector(
+            optimizer=Optimizer(id="example.com/my-app", token="123456"),
+            config=BaseConfiguration(),
+        )
+        pubsub_connector.pubsub_exchange.start()
+        try:
+            yield pubsub_connector
+        finally:
+            pubsub_connector.cancel_publishers()
+            pubsub_connector.cancel_subscribers()
+            await pubsub_connector.pubsub_exchange.shutdown()
+
+    async def test_pubsub(self, connector: 'TestPubSub.PubSubConnector', mocker: pytest_mock.MockFixture) -> None:
+        notifications = []
+        def _callback(message, channel) -> None:
+            notification = f"Message #{len(notifications)} '{message.text}' (channel: '{channel.name}')"
+            notifications.append(notification)
+
+        await connector._create_publisher()
+        await connector._create_subscriber(_callback)
+
+        await asyncio.sleep(0.2)
+        assert len(notifications) > 10
+        assert notifications[0:5] == [
+            "Message #0 \'{\"throughput\": \"31337rps\"}\' (channel: 'metrics')",
+            "Message #1 \'{\"throughput\": \"31337rps\"}\' (channel: 'metrics')",
+            "Message #2 \'{\"throughput\": \"31337rps\"}\' (channel: 'metrics')",
+            "Message #3 \'{\"throughput\": \"31337rps\"}\' (channel: 'metrics')",
+            "Message #4 \'{\"throughput\": \"31337rps\"}\' (channel: 'metrics')",
+        ]

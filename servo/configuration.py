@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import enum
 import inspect
 import json
 import pathlib
@@ -17,7 +18,7 @@ from servo import types
 __all__ = [
     "AbstractBaseConfiguration",
     "BaseConfiguration",
-    "BaseAssemblyConfiguration",
+    "BaseServoConfiguration",
     "Optimizer",
     "ServoConfiguration",
 ]
@@ -40,20 +41,17 @@ class Optimizer(pydantic.BaseSettings):
     deployed under this domain name umbrella for easy access and autocompletion ergonomics.
     """
 
-    app_name: pydantic.constr(regex=r"^[a-z\-\.0-9]{3,64}$")
+    app_name: pydantic.constr(regex=r"^[a-zA-Z\_\-\.0-9]{1,64}$")
     """
-    The symbolic name of the application or service under optimization in a string of URL-safe characters between 3 and 64
+    The symbolic name of the application or service under optimization in a string of URL-safe characters between 1 and 64
     characters in length.
     """
 
     token: str
-    """
-    An opaque access token for interacting with the Optimizer via HTTP Bearer Token authentication.
-    """
+    """An opaque access token for interacting with the Optimizer via HTTP Bearer Token authentication."""
 
     base_url: pydantic.AnyHttpUrl = "https://api.opsani.com/"
-    """
-    The base URL for accessing the Opsani API. This option is typically only useful to Opsani developers or in the context
+    """The base URL for accessing the Opsani API. This field is typically only useful to Opsani developers or in the context
     of deployments with specific contractual, firewall, or security mandates that preclude access to the primary API.
     """
 
@@ -62,13 +60,23 @@ class Optimizer(pydantic.BaseSettings):
     and automated testing to bind the servo to a fixed URL.
     """
 
-    def __init__(self, id: str = None, **kwargs) -> None: # noqa: D107
+    def __init__(self, id: str = None, **kwargs):
         if isinstance(id, str):
             org_domain, app_name = id.split("/")
         else:
             org_domain = kwargs.pop("org_domain", None)
             app_name = kwargs.pop("app_name", None)
         super().__init__(org_domain=org_domain, app_name=app_name, **kwargs)
+
+    @pydantic.root_validator(pre=True)
+    @classmethod
+    def _expand_id_fields(cls, values: dict[str, Any]) -> dict[str, Any]:
+        if id := values.pop("id", None):
+            org_domain, app_name = id.split("/")
+            values["org_domain"] = org_domain
+            values["app_name"] = app_name
+
+        return values
 
     @property
     def id(self) -> str:
@@ -127,19 +135,24 @@ class AbstractBaseConfiguration(pydantic.BaseSettings, servo.logging.Mixin):
     @classmethod
     def parse_file(
         cls, file: pathlib.Path, *, key: Optional[str] = None
-    ) -> "AbstractBaseConfiguration":
+    ) -> List["AbstractBaseConfiguration"]:
         """
-        Parse a YAML configuration file and return a configuration object with the contents.
+        Parse a YAML configuration file and return a list of configuration objects with the contents.
 
         If the file does not contain a valid configuration, a `ValidationError` will be raised.
         """
-        config = yaml.load(file.read_text(), Loader=yaml.FullLoader)
-        if key:
-            try:
-                config = config[key]
-            except KeyError as error:
-                raise KeyError(f"invalid key '{key}'") from error
-        return cls.parse_obj(config)
+        configs = yaml.load_all(file.read_text(), Loader=yaml.FullLoader)
+        config_objs = []
+
+        for config in configs:
+            if key:
+                try:
+                    config = config[key]
+                except KeyError as error:
+                    raise KeyError(f"invalid key '{key}'") from error
+            config_objs.append(cls.parse_obj(config))
+
+        return config_objs
 
     @classmethod
     def generate(cls, **kwargs) -> "AbstractBaseConfiguration":
@@ -249,7 +262,6 @@ BaseConfiguration.__fields__["description"].field_info.extra["env_names"] = set(
     map(str.upper, env_names)
 )
 
-
 class BackoffSettings(BaseConfiguration):
     """
     BackoffSettings objects model configuration of backoff and retry policies.
@@ -266,7 +278,6 @@ class BackoffSettings(BaseConfiguration):
     """
     The maximum number of retry attempts to make before giving up.
     """
-
 
 class Timeouts(BaseConfiguration):
     """Timeouts models the configuration of timeouts for the HTTPX library, which provides HTTP networking capabilities to the
@@ -310,16 +321,64 @@ class Timeouts(BaseConfiguration):
 ProxyKey = pydantic.constr(regex=r"^(https?|all)://")
 
 
+class BackoffContexts(str, enum.Enum):
+    """An enumeration that defines the default set of backoff contexts."""
+    default = "__default__"
+    connect = "connect"
+
+
+class BackoffConfigurations(pydantic.BaseModel):
+    """A mapping of named backoff configurations."""
+    __root__: Dict[str, BackoffSettings]
+
+    @pydantic.root_validator(pre=True)
+    def _nest_unrooted_values(cls, values: Any) -> Any:
+        # NOTE: To parse via parse_obj, we need our values rooted under __root__
+        if isinstance(values, dict):
+            if len(values) != 1 or (
+                len(values) == 1 and values.get("__root__", None) is None
+            ):
+                return { "__root__": values }
+
+        return values
+
+    def __iter__(self):
+        return iter(self.__root__)
+
+    def __getitem__(self, context: str) -> BackoffSettings:
+        return self.__root__[context]
+
+    def get(self, context: str, default: Any = None) -> BackoffSettings:
+        return self.__root__.get(context, default)
+
+    def max_time(self, context: str = BackoffContexts.default) -> Optional[servo.types.Duration]:
+        """Return the maximum amount of time to wait before giving up."""
+        return (
+            self.get(context, None) or
+            self.get(BackoffContexts.default)
+        ).max_time.total_seconds()
+
+    def max_tries(self, context: str = BackoffContexts.default) -> Optional[int]:
+        """Return the maximum number of calls to attempt to the target before
+        giving up."""
+        return (
+            self.get(context, None) or
+            self.get(BackoffContexts.default)
+        ).max_tries
+
+
 class ServoConfiguration(BaseConfiguration):
     """ServoConfiguration models configuration for the Servo connector and establishes default
     settings for shared services such as networking and logging.
     """
 
-    backoff: Dict[str, BackoffSettings] = pydantic.Field(
-        {
-            "__default__": {"max_time": "10m", "max_tries": None},
-            "connect": {"max_time": "1h", "max_tries": None},
-        }
+    backoff: BackoffConfigurations = pydantic.Field(
+        default_factory=lambda: BackoffConfigurations(
+            __root__={
+                BackoffContexts.default: {"max_time": "10m", "max_tries": None},
+                BackoffContexts.connect: {"max_time": "1h", "max_tries": None},
+            }
+        )
     )
     """A mapping of named operations to settings for the backoff library, which provides backoff
     and retry capabilities to the servo.
@@ -327,19 +386,19 @@ class ServoConfiguration(BaseConfiguration):
     See https://github.com/litl/backoff
     """
 
-    proxies: Union[None, ProxyKey, Dict[ProxyKey, Optional[pydantic.AnyHttpUrl]]]
+    proxies: Union[None, ProxyKey, Dict[ProxyKey, Optional[pydantic.AnyHttpUrl]]] = None
     """Proxy configuration for the HTTPX library, which provides HTTP networking capabilities to the
     servo.
 
     See https://www.python-httpx.org/advanced/#http-proxying
     """
 
-    timeouts: Optional[Timeouts]
+    timeouts: Optional[Timeouts] = None
     """Timeout configuration for the HTTPX library, which provides HTTP networking capabilities to the
     servo.
     """
 
-    ssl_verify: Union[None, bool, pydantic.FilePath]
+    ssl_verify: Union[None, bool, pydantic.FilePath] = None
     """SSL verification settings for the HTTPX library, which provides HTTP networking capabilities to the
     servo.
 
@@ -366,15 +425,23 @@ class ServoConfiguration(BaseConfiguration):
         validate_assignment = True
 
 
-class BaseAssemblyConfiguration(BaseConfiguration, abc.ABC):
+class BaseServoConfiguration(BaseConfiguration, abc.ABC):
     """
-    Abstract base class for Servo assembly settings.
+    Abstract base class for Servo instances.
 
-    Note that the concrete BaseAssemblyConfiguration class is built dynamically at runtime
+    Note that the concrete BaseServoConfiguration class is built dynamically at runtime
     based on the avilable connectors and configuration in effect.
 
     See `Assembly` for details on how the concrete model is built.
     """
+
+    name: Optional[str]
+    description: Optional[str]
+
+    optimizer: Optional[Optimizer] = pydantic.Field(
+        None, description="Configuration of the Servo connector"
+    )
+    """The Opsani optimizer backend to collaborate with."""
 
     connectors: Optional[Union[List[str], Dict[str, str]]] = pydantic.Field(
         None,
@@ -394,7 +461,8 @@ class BaseAssemblyConfiguration(BaseConfiguration, abc.ABC):
     """
 
     servo: Optional[ServoConfiguration] = pydantic.Field(
-        None, description="Configuration of the Servo connector"
+        default_factory=lambda: ServoConfiguration(),
+        description="Configuration of the Servo connector"
     )
     """Configuration of the Servo itself.
 
@@ -403,8 +471,8 @@ class BaseAssemblyConfiguration(BaseConfiguration, abc.ABC):
 
     @classmethod
     def generate(
-        cls: Type["BaseAssemblyConfiguration"], **kwargs
-    ) -> Optional["BaseAssemblyConfiguration"]:
+        cls: Type["BaseServoConfiguration"], **kwargs
+    ) -> Optional["BaseServoConfiguration"]:
         """
         Generates configuration for the servo assembly.
         """
@@ -431,7 +499,7 @@ class BaseAssemblyConfiguration(BaseConfiguration, abc.ABC):
         if isinstance(connectors, str):
             # NOTE: Special case. When we are invoked with a string it is typically an env var
             try:
-                decoded_value = BaseAssemblyConfiguration.__config__.json_loads(connectors)  # type: ignore
+                decoded_value = BaseServoConfiguration.__config__.json_loads(connectors)  # type: ignore
             except ValueError as e:
                 raise ValueError(f'error parsing JSON for "{connectors}"') from e
 

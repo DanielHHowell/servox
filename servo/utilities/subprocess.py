@@ -51,7 +51,7 @@ class SubprocessResult(NamedTuple):
 async def stream_subprocess_exec(
     program: str,
     *args,
-    cwd: pathlib.Path = pathlib.Path.cwd(),
+    cwd: Union[pathlib.Path, Callable[[], pathlib.Path]] = pathlib.Path.cwd,
     env: Optional[Dict[str, str]] = None,
     timeout: Timeout = None,
     stdout_callback: Optional[OutputStreamCallback] = None,
@@ -83,7 +83,7 @@ async def stream_subprocess_exec(
     process = await asyncio.create_subprocess_exec(
         program,
         *args,
-        cwd=cwd,
+        cwd=(cwd() if callable(cwd) else cwd),
         env=env,
         stdin=stdin,
         stdout=stdout,
@@ -210,7 +210,7 @@ async def run_subprocess_shell(
 async def stream_subprocess_shell(
     cmd: str,
     *,
-    cwd: pathlib.Path = pathlib.Path.cwd(),
+    cwd: Union[pathlib.Path, Callable[[], pathlib.Path]] = pathlib.Path.cwd,
     env: Optional[Dict[str, str]] = None,
     timeout: Timeout = None,
     stdout_callback: Optional[OutputStreamCallback] = None,
@@ -240,7 +240,7 @@ async def stream_subprocess_shell(
     """
     process = await asyncio.create_subprocess_shell(
         cmd,
-        cwd=cwd,
+        cwd=(cwd() if callable(cwd) else cwd),
         env=env,
         stdin=stdin,
         stdout=stdout,
@@ -304,19 +304,24 @@ async def stream_subprocess_output(
             )
         )
 
-    if timeout is None:
-        await asyncio.wait([process.wait(), *tasks])
-    else:
-        timeout_in_seconds = (
-            timeout.total_seconds() if isinstance(timeout, datetime.timedelta) else timeout
-        )
-        try:
-            await asyncio.wait_for(process.wait(), timeout=timeout_in_seconds)
-            await asyncio.wait(tasks)
-        except asyncio.TimeoutError as timeout:
-            process.kill()
-            [task.cancel() for task in tasks]
-            raise timeout
+    timeout_in_seconds = (
+        timeout.total_seconds() if isinstance(timeout, datetime.timedelta) else timeout
+    )
+    try:
+        # Await the tasks to start reading from the I/O streams
+        await asyncio.wait(tasks)
+
+        # Run the process under a timeout
+        await asyncio.wait_for(process.wait(), timeout=timeout_in_seconds)
+
+    except Exception as error:
+        process.terminate()
+
+        [task.cancel() for task in tasks]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        if not isinstance(error, asyncio.CancelledError):
+            raise error
 
     return cast(int, process.returncode)
 
@@ -328,7 +333,7 @@ async def _read_lines_from_output_stream(
     encoding: str = "utf-8",
 ) -> None:
     """
-    Asynchronouysly read a subprocess output stream line by line,
+    Asynchronously read a subprocess output stream line by line,
     optionally invoking a callback with each line as it is read.
 
     :param stream: An IO stream reader linked to the stdout or stderr of a subprocess.

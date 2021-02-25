@@ -58,6 +58,9 @@ class AppdynamicsConfiguration(servo.BaseConfiguration):
     app_id: str
     """The Application ID for accessing the AppDynamics metrics API."""
 
+    tier: str
+    """The name of the AppDynamics tier that optimization of nodes will be performed on."""
+
     base_url: pydantic.AnyHttpUrl = DEFAULT_BASE_URL
     """The base URL for accessing the AppDynamics metrics API.
 
@@ -85,17 +88,90 @@ class AppdynamicsConfiguration(servo.BaseConfiguration):
             account='account-replace',
             password='password-replace',
             app_id='app_id-replace',
+            tier='tier-replace',
             metrics=[
                 AppdynamicsMetric(
                     "throughput",
-                    servo.Unit.REQUESTS_PER_MINUTE,
-                    query="Overall Application Performance|Calls per Minute",
+                    servo.Unit.requests_per_minute,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Calls per Minute",
                 ),
                 AppdynamicsMetric(
                     "error_rate",
-                    servo.Unit.COUNT,
-                    query="Overall Application Performance|Errors per Minute",
+                    servo.Unit.count,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Errors per Minute",
                 ),
+                AppdynamicsMetric(
+                    "latency",
+                    servo.Unit.milliseconds,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Average Response Time (ms)",
+                ),
+                AppdynamicsMetric(
+                    "latency_normal",
+                    servo.Unit.milliseconds,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Normal Average Response Time (ms)",
+                ),
+                AppdynamicsMetric(
+                    "latency_95th",
+                    servo.Unit.milliseconds,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|95th Percentile Response Time (ms)",
+                ),
+                AppdynamicsMetric(
+                    "slow_calls",
+                    servo.Unit.count,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Number of Slow Calls",
+                ),
+                AppdynamicsMetric(
+                    "very_slow_calls",
+                    servo.Unit.count,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Number of Very Slow Calls",
+                ),
+                AppdynamicsMetric(
+                    "stall",
+                    servo.Unit.count,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Stall Count",
+                ),
+
+                # Tuning instance metrics
+                AppdynamicsMetric(
+                    "throughput",
+                    servo.Unit.requests_per_minute,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend-service-tuning|Calls per Minute",
+                ),
+                AppdynamicsMetric(
+                    "error_rate",
+                    servo.Unit.count,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend-service-tuning|Errors per Minute",
+                ),
+                AppdynamicsMetric(
+                    "latency",
+                    servo.Unit.milliseconds,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend-service-tuning|Average Response Time (ms)",
+                ),
+                AppdynamicsMetric(
+                    "latency_95th",
+                    servo.Unit.milliseconds,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend-service-tuning|95th Percentile Response Time (ms)",
+                ),
+                AppdynamicsMetric(
+                    "latency_normal",
+                    servo.Unit.milliseconds,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend-service-tuning|Normal Average Response Time (ms)",
+                ),
+                AppdynamicsMetric(
+                    "slow_calls",
+                    servo.Unit.count,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend-service-tuning|Number of Slow Calls",
+                ),
+                AppdynamicsMetric(
+                    "very_slow_calls",
+                    servo.Unit.count,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend-service-tuning|Number of Very Slow Calls",
+                ),
+                AppdynamicsMetric(
+                    "stall",
+                    servo.Unit.count,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend-service-tuning|Stall Count",
+                )
             ],
             **kwargs,
         )
@@ -189,8 +265,8 @@ class AppdynamicsChecks(servo.BaseChecks):
     description="AppDynamics Connector for Opsani",
     version="0.0.1",
     homepage="https://github.com/opsani/servox",
-    license=servo.License.APACHE2,
-    maturity=servo.Maturity.STABLE,
+    license=servo.License.apache2,
+    maturity=servo.Maturity.stable,
 )
 class AppdynamicsConnector(servo.BaseConnector):
     """AppdynamicsConnector objects enable servo assemblies to capture
@@ -203,7 +279,7 @@ class AppdynamicsConnector(servo.BaseConnector):
     async def check(
         self,
         matching: Optional[servo.CheckFilter] = None,
-        halt_on: Optional[servo.ErrorSeverity] = servo.ErrorSeverity.CRITICAL,
+        halt_on: Optional[servo.ErrorSeverity] = servo.ErrorSeverity.critical,
     ) -> List[servo.Check]:
         """Checks that the configuration is valid and the connector can capture
         measurements from AppDynamics.
@@ -309,6 +385,27 @@ class AppdynamicsConnector(servo.BaseConnector):
             base_url=self.config.api_url, metric=metric, start=start, end=end
         )
 
+        # Collect node information for optimization service
+        # self.logger.trace(
+        #     f"Querying AppDynamics nodes"
+        # )
+        #
+        # async with httpx.AsyncClient(
+        #         base_url=self.config.api_url,
+        # ) as client:
+        #     try:
+        #         response = await client.get(f"applications/{self.config.app_id}/tiers/{self.config.tier}/nodes",
+        #                                     auth=(f"{self.config.user_auth}", self.config.password))
+        #         response.raise_for_status()
+        #     except (httpx.HTTPError, httpcore._exceptions.ReadTimeout, httpcore._exceptions.ConnectError) as error:
+        #         self.logger.trace(f"HTTP error encountered during GET {response.url}: {error}")
+        #         raise
+        #
+        # data = response.json()
+        # nodes = [node['name'] for node in data]
+        #
+        # self.logger.trace(f"Retrieved nodes for tier {self.config.tier}: {nodes}")
+
         self.logger.trace(
             f"Querying AppDynamics (`{metric.query}`): {appdynamics_request.endpoint}"
         )
@@ -335,18 +432,23 @@ class AppdynamicsConnector(servo.BaseConnector):
                 f"Captured {result_dict['value']} at {result_dict['startTimeInMillis']} for {metric}"
             )
 
+        instance = data["metricPath"].split('|')[2] # e.g. "Business Transaction Performance|Business Transactions|frontend-service|/payment|Calls per Minute"
+        job = data["metricName"] # e.g. "BTM|BTs|BT:270723|Component:8435|Calls per Minute"
+
         for result_dict in data["metricValues"]:
 
             # TODO: Optionals (annotations, id, metadata)
-            # TODO: List of values in TimeSeries or list of TimeSeries?
+
+            data_points: List[servo.DataPoint] = [servo.DataPoint(
+                metric, result_dict['startTimeInMillis'], float(result_dict['value'])
+            )]
 
             readings.append(
                 servo.TimeSeries(
-                    metric=metric,
-                    # annotation=annotation,
-                    values=[(result_dict['startTimeInMillis'], float(result_dict['value']))],
-                    # id=id
-                    # metadata=metadata
+                    metric,
+                    data_points,
+                    id=f"{{instance={instance},job={job}}}",
                 )
             )
+
         return readings

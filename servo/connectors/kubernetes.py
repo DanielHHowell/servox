@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import copy
 import datetime
+import decimal
 import enum
 import itertools
 import os
@@ -100,7 +101,6 @@ class Condition(servo.logging.Mixin):
 
 async def wait_for_condition(
     condition: Condition,
-    timeout: Optional[servo.DurationDescriptor] = None,
     interval: servo.DurationDescriptor = 1,
     fail_on_api_error: bool = True,
 ) -> None:
@@ -124,28 +124,41 @@ async def wait_for_condition(
     servo.logger.debug(f"waiting for condition: {condition}")
 
     started_at = datetime.datetime.now()
+    duration = servo.Duration(interval)
     async def _wait_for_condition() -> None:
+        servo.logger.debug(f"wait for condition: {condition}")
         while True:
             try:
-                servo.logger.debug(f"checking condition {condition}")
+                servo.logger.trace(f"checking condition {condition}")
                 if await condition.check():
-                    servo.logger.debug(f"condition passed: {condition}")
+                    servo.logger.trace(f"condition passed: {condition}")
                     break
+
+                # if the condition is not met, sleep for the interval
+                # to re-check later
+                servo.logger.trace(f"sleeping for {duration}")
+                await asyncio.sleep(duration.total_seconds())
+
+            except asyncio.CancelledError:
+                servo.logger.trace(f"wait for condition cancelled: {condition}")
+                raise
+
             except kubernetes_asyncio.client.exceptions.ApiException as e:
                 servo.logger.warning(f"encountered API exception while waiting: {e}")
                 if fail_on_api_error:
                     raise
 
-            # if the condition is not met, sleep for the interval
-            # to re-check later
-            servo.logger.debug(f"sleeping for {interval}")
-            await asyncio.sleep(interval)
+    task = asyncio.create_task(_wait_for_condition())
+    try:
+        await task
+    except asyncio.CancelledError:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
-    await asyncio.wait_for(
-        _wait_for_condition(),
-        timeout=(timeout and servo.Duration(timeout).total_seconds())
-    )
-    servo.logger.debug(f"wait completed (total={servo.Duration.since(started_at)}) {condition}")
+        raise
+    finally:
+        servo.logger.debug(f"wait completed (total={servo.Duration.since(started_at)}) {condition}")
 
 
 class ResourceRequirements(enum.Flag):
@@ -398,7 +411,6 @@ class KubernetesModel(abc.ABC, servo.logging.Mixin):
 
     async def wait_until_ready(
         self,
-        timeout: Optional[servo.DurationDescriptor] = None,
         interval: servo.DurationDescriptor = 1,
         fail_on_api_error: bool = False,
     ) -> None:
@@ -425,16 +437,23 @@ class KubernetesModel(abc.ABC, servo.logging.Mixin):
             self.is_ready,
         )
 
-        await wait_for_condition(
-            condition=ready_condition,
-            timeout=timeout,
-            interval=interval,
-            fail_on_api_error=fail_on_api_error,
+        task = asyncio.create_task(
+            wait_for_condition(
+                condition=ready_condition,
+                interval=interval,
+                fail_on_api_error=fail_on_api_error,
+            )
         )
+        try:
+            await task
+        except asyncio.CancelledError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            raise
 
     async def wait_until_deleted(
         self,
-        timeout: Optional[servo.DurationDescriptor] = None,
         interval: servo.DurationDescriptor = 1
     ) -> None:
         """Wait until the resource is deleted from the cluster.
@@ -468,11 +487,20 @@ class KubernetesModel(abc.ABC, servo.logging.Mixin):
 
         delete_condition = Condition("api object deleted", deleted_fn)
 
-        await wait_for_condition(
-            condition=delete_condition,
-            timeout=timeout,
-            interval=interval,
+        task = asyncio.create_task(
+            wait_for_condition(
+                condition=delete_condition,
+                interval=interval,
+            )
         )
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            raise
 
     async def raise_for_status(self) -> None:
         """Raise an exception if in an unhealthy state."""
@@ -846,7 +874,6 @@ class Pod(KubernetesModel):
     }
 
     @classmethod
-    @backoff.on_exception(backoff.expo, asyncio.TimeoutError, max_time=60)
     async def read(cls, name: str, namespace: str) -> "Pod":
         """Read the Pod from the cluster under the given namespace.
 
@@ -857,9 +884,7 @@ class Pod(KubernetesModel):
         servo.logger.debug(f'reading pod "{name}" in namespace "{namespace}"')
 
         async with cls.preferred_client() as api_client:
-            obj = await asyncio.wait_for(
-                api_client.read_namespaced_pod_status(name, namespace), 5.0
-            )
+            obj = await api_client.read_namespaced_pod_status(name, namespace)
             servo.logger.trace("pod: ", obj)
             return Pod(obj)
 
@@ -924,16 +949,12 @@ class Pod(KubernetesModel):
                 body=options,
             )
 
-    @backoff.on_exception(backoff.expo, asyncio.TimeoutError, max_time=60)
     async def refresh(self) -> None:
         """Refresh the underlying Kubernetes Pod resource."""
         async with self.api_client() as api_client:
-            self.obj = await asyncio.wait_for(
-                api_client.read_namespaced_pod_status(
-                    name=self.name,
-                    namespace=self.namespace,
-                ),
-                5.0,
+            self.obj = await api_client.read_namespaced_pod_status(
+                name=self.name,
+                namespace=self.namespace,
             )
 
     async def is_ready(self) -> bool:
@@ -992,7 +1013,7 @@ class Pod(KubernetesModel):
 
         self.logger.trace(f"checking status conditions {status.conditions}")
         for cond in status.conditions:
-            if cond.reason == "Unschedulable":
+            if cond.reason in {"Unschedulable", "ContainersNotReady"}:
                 # FIXME: The servo rejected error should be raised further out. This should be a generic scheduling error
                 raise servo.AdjustmentRejectedError(message=cond.message, reason="scheduling-failed")
 
@@ -1121,7 +1142,6 @@ class Service(KubernetesModel):
     }
 
     @classmethod
-    @backoff.on_exception(backoff.expo, asyncio.TimeoutError, max_time=60)
     async def read(cls, name: str, namespace: str) -> "Service":
         """Read the Service from the cluster under the given namespace.
 
@@ -1132,10 +1152,7 @@ class Service(KubernetesModel):
         servo.logger.trace(f'reading service "{name}" in namespace "{namespace}"')
 
         async with cls.preferred_client() as api_client:
-            obj = await asyncio.wait_for(
-                api_client.read_namespaced_service(name, namespace),
-                5.0
-            )
+            obj = await api_client.read_namespaced_service(name, namespace)
             servo.logger.trace("service: ", obj)
             return Service(obj)
 
@@ -1966,7 +1983,7 @@ class Deployment(KubernetesModel):
                 f"Deleting tuning Pod '{canary.name}' from namespace '{canary.namespace}'..."
             )
             await canary.delete()
-            await canary.wait_until_deleted(timeout=timeout)
+            await canary.wait_until_deleted()
             self.logger.info(
                 f"Deleted tuning Pod '{canary.name}' from namespace '{canary.namespace}'."
             )
@@ -2076,21 +2093,27 @@ class Deployment(KubernetesModel):
         )
         progress.start()
 
+        task = asyncio.create_task(tuning_pod.wait_until_ready())
+        task.add_done_callback(lambda _: progress.complete())
+        gather_task = asyncio.gather(
+            task,
+            progress.watch(progress_logger),
+        )
+
         try:
-            wait_for_pod_task = asyncio.create_task(tuning_pod.wait_until_ready())
-            wait_for_pod_task.add_done_callback(lambda _: progress.complete())
             await asyncio.wait_for(
-                asyncio.gather(
-                    wait_for_pod_task,
-                    progress.watch(progress_logger)
-                ),
+                gather_task,
                 timeout=timeout.total_seconds()
             )
 
-        except asyncio.CancelledError:
-            pass
-
         except asyncio.TimeoutError:
+            servo.logger.debug(f"Cancelling Task: {task}, progress: {progress}")
+            for t in {task, gather_task}:
+                t.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await t
+                    servo.logger.debug(f"Cancelled Task: {t}, progress: {progress}")
+
             await tuning_pod.raise_for_status()
 
         await tuning_pod.refresh()
@@ -2137,7 +2160,7 @@ class Millicore(int):
                 return cls(int(v[:-1]))
             else:
                 return cls(int(float(v) * 1000))
-        elif isinstance(v, (int, float)):
+        elif isinstance(v, (int, float, decimal.Decimal)):
             return cls(int(v * 1000))
         else:
             raise ValueError("could not parse millicore value")
@@ -2310,15 +2333,17 @@ class BaseOptimization(abc.ABC, pydantic.BaseModel, servo.logging.Mixin):
             NotImplementedError: Raised if there is no handler for a given failure mode. Subclasses
                 must filter failure modes before calling the superclass implementation.
         """
-        if mode == FailureMode.crash:
-            self.logger.error(f"an unrecoverable failure occurred while interacting with Kubernetes: {error.__class__.__name__} - {str(error)}")
-            raise error
 
         # Ensure that we chain any underlying exceptions that may occur
         try:
-            if mode == FailureMode.ignore:
-                self.logger.warning(f"ignoring runtime error and continuing: {error}")
-                self.logger.opt(exception=error).exception("ignoring Kubernetes error")
+            self.logger.error(f"handling error with with failure mode {mode}: {error.__class__.__name__} - {str(error)}")
+            self.logger.opt(exception=error).debug(f"kubernetes error details")
+
+            if mode == FailureMode.exception:
+                raise error
+
+            elif mode == FailureMode.ignore:
+                self.logger.opt(exception=error).warning(f"ignoring exception")
                 return True
 
             elif mode == FailureMode.rollback:
@@ -2331,12 +2356,12 @@ class BaseOptimization(abc.ABC, pydantic.BaseModel, servo.logging.Mixin):
                 # Trap any new modes that need to be handled
                 raise NotImplementedError(
                     f"missing error handler for failure mode '{mode}'"
-                ) from error
+                )
 
             raise error # Always communicate errors to backend unless ignored
 
         except Exception as handler_error:
-            raise handler_error from error
+            raise handler_error from error  # reraising an error from itself is safe
 
 
     @abc.abstractmethod
@@ -2467,7 +2492,7 @@ class DeploymentOptimization(BaseOptimization):
         """
         self.logger.info(f"adjustment failed: rolling back deployment... ({error})")
         await asyncio.wait_for(
-            asyncio.gather(self.deployment.rollback()),
+            self.deployment.rollback(),
             timeout=self.timeout.total_seconds(),
         )
 
@@ -2480,7 +2505,7 @@ class DeploymentOptimization(BaseOptimization):
         """
         self.logger.info(f"adjustment failed: destroying deployment...")
         await asyncio.wait_for(
-            asyncio.gather(self.deployment.delete()),
+            self.deployment.delete(),
             timeout=self.timeout.total_seconds(),
         )
 
@@ -2666,7 +2691,15 @@ class CanaryOptimization(BaseOptimization):
         dep_copy = copy.copy(self.target_deployment)
         dep_copy.set_container(self.tuning_container.name, self.tuning_container)
         await dep_copy.delete_tuning_pod(raise_if_not_found=False)
-        self.canary = await dep_copy.ensure_tuning_pod(timeout=self.timeout.total_seconds())
+        task = asyncio.create_task(dep_copy.ensure_tuning_pod(timeout=self.timeout.total_seconds()))
+        try:
+            self.canary = await task
+        except asyncio.CancelledError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+            raise
 
     @property
     def cpu(self) -> CPU:
@@ -2784,7 +2817,6 @@ class CanaryOptimization(BaseOptimization):
                     self.logger.warning(
                         f"cannot rollback a tuning Pod: falling back to destroy: {error}"
                     )
-                    self.logger.opt(exception=error).exception("")
 
                 await asyncio.wait_for(self.destroy(), timeout=self.timeout.total_seconds())
 
@@ -2987,23 +3019,31 @@ class KubernetesOptimizations(pydantic.BaseModel, servo.logging.Mixin):
             tasks.append(task)
 
         for future in asyncio.as_completed(tasks, timeout=self.config.timeout):
-            result = await future
-            if exception := result.exception():
-                servo.logger.exception(f"Optimization failed with exception: {exception}")
+            try:
+                await future
+            except Exception as error:
+                servo.logger.exception(f"Optimization failed with error: {error}")
 
     async def is_ready(self):
         if self.optimizations:
             self.logger.debug(
                 f"Checking for readiness of {len(self.optimizations)} optimizations"
             )
-            results = await asyncio.wait_for(
-                asyncio.gather(
-                    *list(map(lambda a: a.is_ready(), self.optimizations)),
-                ),
-                timeout=self.config.timeout.total_seconds()
-            )
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(
+                        *list(map(lambda a: a.is_ready(), self.optimizations)),
+                    ),
+                    timeout=self.config.timeout.total_seconds()
+                )
 
-            return all(results)
+                return all(results)
+
+            except asyncio.TimeoutError:
+                return False
+
+        else:
+            return True
 
 
     class Config:
@@ -3133,7 +3173,7 @@ class FailureMode(str, enum.Enum):
     rollback = "rollback"
     destroy = "destroy"
     ignore = "ignore"
-    crash = "crash"
+    exception = "exception"
 
     @classmethod
     def options(cls) -> List[str]:
@@ -3194,7 +3234,7 @@ class BaseKubernetesConfiguration(servo.BaseConfiguration):
         description="Duration to observe the application after an adjust to ensure the deployment is stable. May be overridden by optimizer supplied `control.adjust.settlement` value."
     )
     on_failure: FailureMode = pydantic.Field(
-        FailureMode.crash,
+        FailureMode.exception,
         description=f"How to handle a failed adjustment. Options are: {servo.utilities.strings.join_to_series(list(FailureMode.__members__.values()))}",
     )
     timeout: Optional[servo.Duration] = pydantic.Field(
@@ -3454,7 +3494,7 @@ class KubernetesConnector(servo.BaseConnector):
             progress=p.progress,
         )
         progress = servo.EventProgress()
-        future = asyncio.ensure_future(state.apply(adjustments))
+        future = asyncio.create_task(state.apply(adjustments))
         future.add_done_callback(lambda _: progress.trigger())
 
         await asyncio.gather(

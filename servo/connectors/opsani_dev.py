@@ -38,14 +38,20 @@ ENVOY_SIDECAR_LABELS = {
 }
 ENVOY_SIDECAR_DEFAULT_PORT = 9980
 
+class CPU(servo.connectors.kubernetes.CPU):
+    step: servo.connectors.kubernetes.Millicore = "125m"
+
+class Memory(servo.connectors.kubernetes.Memory):
+    step: servo.connectors.kubernetes.ShortByteSize = "128 MiB"
+
 class OpsaniDevConfiguration(servo.AbstractBaseConfiguration):
     namespace: str
     deployment: str
     container: str
     service: str
     port: Optional[Union[pydantic.StrictInt, str]] = None
-    cpu: servo.connectors.kubernetes.CPU
-    memory: servo.connectors.kubernetes.Memory
+    cpu: CPU
+    memory: Memory
     prometheus_base_url: str = PROMETHEUS_SIDECAR_BASE_URL
 
     @classmethod
@@ -55,8 +61,8 @@ class OpsaniDevConfiguration(servo.AbstractBaseConfiguration):
             deployment="app-deployment",
             container="main",
             service="app",
-            cpu=servo.connectors.kubernetes.CPU(min="250m", max="4000m", step="125m"),
-            memory=servo.connectors.kubernetes.Memory(min="256 MiB", max="4.0 GiB", step="128 MiB"),
+            cpu=CPU(min="250m", max="4000m"),
+            memory=Memory(min="256 MiB", max="4.0 GiB"),
         )
 
     def generate_kubernetes_config(
@@ -289,9 +295,9 @@ class OpsaniDevChecks(servo.BaseChecks):
             self.config.service, self.config.namespace
         )
         service_type = service.obj.spec.type
-        if not service_type in ("ClusterIP", "LoadBalancer"):
+        if not service_type in ("ClusterIP", "LoadBalancer", "NodePort"):
             raise ValueError(
-                f"expected service type of ClusterIP or LoadBalancer but found {service_type}"
+                f"expected service type of ClusterIP, LoadBalancer, or NodePort but found {service_type}"
             )
 
     @servo.checks.check("service port")
@@ -475,7 +481,7 @@ class OpsaniDevChecks(servo.BaseChecks):
             raise servo.checks.CheckError(
                 f"deployment '{deployment.name}' is missing annotations: {desc}",
                 hint=f"Patch annotations via: `{command}`",
-                remedy=lambda: servo.utilities.subprocess.run_subprocess_shell(command)
+                remedy=lambda: _stream_remedy_command(command)
             )
 
     @servo.checks.require("Deployment PodSpec has expected labels")
@@ -499,7 +505,7 @@ class OpsaniDevChecks(servo.BaseChecks):
             raise servo.checks.CheckError(
                 f"deployment '{deployment.name}' is missing labels: {desc}",
                 hint=f"Patch labels via: `{command}`",
-                remedy=lambda: servo.utilities.subprocess.run_subprocess_shell(command)
+                remedy=lambda: _stream_remedy_command(command)
             )
 
     @servo.checks.require("Deployment has Envoy sidecar container")
@@ -519,7 +525,7 @@ class OpsaniDevChecks(servo.BaseChecks):
         raise servo.checks.CheckError(
             f"deployment '{deployment.name}' pod template spec does not include envoy sidecar container ('opsani-envoy')",
             hint=f"Inject Envoy sidecar container via: `{command}`",
-            remedy=lambda: servo.utilities.subprocess.run_subprocess_shell(command)
+            remedy=lambda: _stream_remedy_command(command)
         )
 
     @servo.checks.require("Pods have Envoy sidecar containers")
@@ -596,7 +602,7 @@ class OpsaniDevChecks(servo.BaseChecks):
                         raise servo.checks.CheckError(
                             f"Envoy is not reporting any traffic to Prometheus for metric '{metric.name}' ({metric.query})",
                             hint=f"Send traffic to your application on port 9980. Try `{command}`",
-                            remedy=lambda: servo.utilities.subprocess.run_subprocess_shell(command)
+                            remedy=lambda: _stream_remedy_command(command)
                         )
                     summaries.append(f"{metric.name}={value}{metric.unit}")
                 elif metric.name == "main_error_rate":
@@ -635,7 +641,7 @@ class OpsaniDevChecks(servo.BaseChecks):
         raise servo.checks.CheckError(
             f"service '{service.name}' is not routing traffic through Envoy sidecar on port {proxy_service_port}",
             hint=f"Update target port via: `{command}`",
-            remedy=lambda: servo.utilities.subprocess.run_subprocess_shell(command)
+            remedy=lambda: _stream_remedy_command(command)
         )
 
     @servo.check("Tuning pod is running")
@@ -719,3 +725,10 @@ class OpsaniDevConnector(servo.BaseConnector):
         return await OpsaniDevChecks.run(
             self.config, matching=matching, halt_on=halt_on
         )
+
+async def _stream_remedy_command(command: str) -> None:
+    await servo.utilities.subprocess.stream_subprocess_shell(
+        command,
+        stdout_callback=lambda msg: servo.logger.debug(f"[stdout] {msg}"),
+        stderr_callback=lambda msg: servo.logger.warning(f"[stderr] {msg}"),
+    )

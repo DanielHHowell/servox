@@ -93,42 +93,42 @@ class AppdynamicsConfiguration(servo.BaseConfiguration):
                 AppdynamicsMetric(
                     "throughput",
                     servo.Unit.requests_per_minute,
-                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Calls per Minute",
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend|Calls per Minute",
                 ),
                 AppdynamicsMetric(
                     "error_rate",
-                    servo.Unit.count,
-                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Errors per Minute",
+                    servo.Unit.requests_per_minute,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend|Errors per Minute",
                 ),
                 AppdynamicsMetric(
                     "latency",
                     servo.Unit.milliseconds,
-                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Average Response Time (ms)",
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend|Average Response Time (ms)",
                 ),
                 AppdynamicsMetric(
                     "latency_normal",
                     servo.Unit.milliseconds,
-                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Normal Average Response Time (ms)",
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend|Normal Average Response Time (ms)",
                 ),
                 AppdynamicsMetric(
                     "latency_95th",
                     servo.Unit.milliseconds,
-                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|95th Percentile Response Time (ms)",
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend|95th Percentile Response Time (ms)",
                 ),
                 AppdynamicsMetric(
                     "slow_calls",
-                    servo.Unit.count,
-                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Number of Slow Calls",
+                    servo.Unit.requests_per_minute,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend|Number of Slow Calls",
                 ),
                 AppdynamicsMetric(
                     "very_slow_calls",
-                    servo.Unit.count,
-                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Number of Very Slow Calls",
+                    servo.Unit.requests_per_minute,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend|Number of Very Slow Calls",
                 ),
                 AppdynamicsMetric(
                     "stall",
-                    servo.Unit.count,
-                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Stall Count",
+                    servo.Unit.requests_per_minute,
+                    query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend|Stall Count",
                 ),
 
                 # Tuning instance metrics
@@ -139,7 +139,7 @@ class AppdynamicsConfiguration(servo.BaseConfiguration):
                 ),
                 AppdynamicsMetric(
                     "error_rate",
-                    servo.Unit.count,
+                    servo.Unit.requests_per_minute,
                     query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend-service-tuning|Errors per Minute",
                 ),
                 AppdynamicsMetric(
@@ -159,17 +159,17 @@ class AppdynamicsConfiguration(servo.BaseConfiguration):
                 ),
                 AppdynamicsMetric(
                     "slow_calls",
-                    servo.Unit.count,
+                    servo.Unit.requests_per_minute,
                     query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend-service-tuning|Number of Slow Calls",
                 ),
                 AppdynamicsMetric(
                     "very_slow_calls",
-                    servo.Unit.count,
+                    servo.Unit.requests_per_minute,
                     query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend-service-tuning|Number of Very Slow Calls",
                 ),
                 AppdynamicsMetric(
                     "stall",
-                    servo.Unit.count,
+                    servo.Unit.requests_per_minute,
                     query="Business Transaction Performance|Business Transactions|frontend-service|/payment|Individual Nodes|frontend-service-tuning|Stall Count",
                 )
             ],

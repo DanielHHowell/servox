@@ -17,27 +17,135 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Releases are
 versioned in accordance with [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.0] "serenity now" - Unreleased
+## [0.9.5] "serenity now" - 2021-02-24
+
+### Enhanced
+
+- Added support for deploying Opsani Dev on Kubernetes `NodePort` Services.
+- Range setting that are out of step alignment now suggest alternative values
+  to consider.
+- Normal operational logging is less verbose.
+
+### Fixed
+
+- Container restarts due to `CancellationError` in response to Kubernetes
+  adjustment failures are now avoided.
+- Kubernetes `ContainersNotReady` status upon timeout are now handled as
+  adjustment failures.
+- HTTP status code 4xx responses are no longer retried.
+
+## [0.9.4] "serenity now" - 2021-02-17
+
+### Fixed
+
+- Use the bound logger for reporting Prometheus query errors in publisher. refs
+  SOL-238
+
+## [0.9.3] "serenity now" - 2021-02-16
+
+### Fixed
+
+- Fixed an asyncio crash in the `ServoRunner`.
+- Gracefully handle query errors from Prometheus.
+- Support asyncio cancellation within pub/sub publisher decorator.
+
+## [0.9.2] "serenity now" - 2021-02-16
+
+### Fixed
+
+- Include colorama package in release builds.
+
+## [0.9.1] "serenity now" - 2021-02-16
+
+### Fixed
+
+- Include toml package in release builds.
+
+## [0.9.0] "serenity now" - 2021-02-16
 
 ### Added
 
+- Opsani Dev v2.0 integrated for rapid service optimization.
 - Incorporated [uvloop](https://github.com/MagicStack/uvloop) for faster async
   event loops.
 - Initial release of Wavefront Connector.
+- Support for marking adjustments as failed or rejected via exceptions.
+- Multiple servos can now be run within a single assembly. If the config file is
+  a compound YAML document, multiple servos will be instantiated allowing the
+  concurrent optimization of multiple applications.
+- Introduced emulator connector, which pretends to take measurements and make
+  adjustments with randomly sampled data but does not do any real work.
+- New servo configurations can be generated and added to the assembly via
+  `servo generate --append`.
+- New command `servo list` for viewing the active servos in the assembly.
+- Introduced new top-level option `--name`/`-n` for targeting a specific servo
+  in the assembly when running in multi-servo mode.
+- In multi-servo configurations, concurrency can be constrained via the new
+  top-level `--limit` option.
+- Connector details for a particular servo instance can now be displayed via the
+   `servo show connectors` CLI command.
+- Extensive new development and testing tooling.
+- Introduced `servo.pubsub` module providing publisher/subscriber capabilities.
+- The test suite now runs extensive integration and system tests under CI.
+- All aspects of the Opsani Dev installation experience are now covered by
+  checks.
+- Introduced the `attach` and `detach` lifeycle events for handling setup and
+  teardown concerns that need to execute when a Servo or Connector is added or
+  removed from am Assembly/Servo.
+- Added automated checks.
+- Introduced pub/sub module.
+
+### Enhanced
+
+- The Kubernetes connector now recovers from and reports on numerous failure
+  modes such as unschedulable configurations.
+- The Prometheus connector now exposes a Prometheus HTTP API client library.
+- The Envoy sidecar can now be automatically injected via the CLI.
+- The Opsani Dev connector now exposes a very simple configuration surface.
 
 ### Changed
 
 - The `__codename__` support has been generalized as `cryptonym` attribute for
   all connectors.
 - Version output now includes the cryptonym.
-- Updated Pydantic to v1.7.2
+- Updated Pydantic to v1.7.3
 - Updated httpx to v0.16.1
-- Updated orjson to v3.4.3
+- Updated orjson to v3.4.6
+- Updated the `servo.errors` module with numerous new error types.
+- The `servo.events.run_event_handlers` method now always returns a list of
+  `EventResult` objects when `return_exceptions` is True. Exceptions are caught
+  and embedded in the `value` attribute.
+- Exceptions raised by an event handler are decorated with a
+  `servo.events.EventResult` object on the `__event_result__` attribute.
+- When an event is cancelled by a before event handler by raising a
+  `servo.errors.EventCancelledError`, an empty result list is now returned.
+- The `servo.api.Mixin` class is now an abstract base class and requires the
+  implementation of the `api_client_options` method.
+- Configuration of backoff/retry behaviors has been reimplemented for clarity
+  and simplicity.
+- The `servo.assembly.Assembly` class now maintains a collection of servos
+  rather than a singleton.
+- The optimizer settings are now part of the configuration.
+- All CLI commands are now multi-servo aware and enabled.
+- The `servo.Runner` class has been split into `servo.AssemblyRunner` and
+  `servo.ServoRunner` to support multi-servo configurations.
+- The Docker image entry point is now multi-servo aware.
+- Servos are now named. The default name is adopted from the Optimizer ID if
+  one is not directly configured.
+- The top level `servo connectors` command now displays info about all available
+  connectors rather than those that are currently active. `servo show
+  connectors` now reports instance specific connector info.
+- Migrated the `current*` family of methods off of model classes and into module
+  level functions be more Pythonic.
 
 ### Removed
 
 - The `duration` attribute of the Vegeta Connector configuration is now private
   as the optimizer or operator always provide the value.
+- The `servo.events.broadcast_event` method was removed as it was seldom used
+  and the functionality is easily replicated in downstream code.
+- API client options including base URL, proxies, and timeouts are no longer
+  duplicated across connectors as an extra attribute.
 
 ### Fixed
 
@@ -47,6 +155,34 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   traceback context is not lost.
 - An invalid key was referenced during adjustment of Kubernetes container memory
   request/limits.
+- Scalar `servo.types.DataPoint` objects are now serialized for processing by
+  the optimizer service rather than raising an exception.
+- The `ConnectorCLI` class now supports aliased connector instances.
+- Test coverage gaps have been plugged throughout the CLI module.
+- Scalar data points can now be handled by the CLI.
+- Invalid keys in the `connectors` field of a config file will no longer
+  trigger an unhandled exception.
+- Step values of range settings are now validated to ensure that a step of zero
+  is not configured.
+- Setting values are now validated appropriately upon being changed. This
+  prevents invalid values from being externally applied to a running
+  optimization (e.g., an external deployment or manual change is made).
+- Fixed exception in Prometheus mutltichecks due to unescpaed format
+  characters in interpolated Prometheus queries.
+- Fixed connector lifecycle issue with Opsani Dev connector preventing use in
+  several of the CLI commands.
+- Corrected an entry points discovery issue affecting the latest versions of
+  Python.
+
+## [0.8.4] "pass the calamari" - 2021-02-05
+
+### Fixed
+
+- Containers are no longer accessed positionally by index instead of by name at
+  any time. This was resulting in broken adjustments when the Deployment
+  contained an init container, the main container was not the first container,
+  or during installation the Envoy proxy was injected at the beginning of the
+  container list instead of the end.
 
 ## [0.8.3] "pass the calamari" - 2020-10-21
 

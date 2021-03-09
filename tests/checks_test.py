@@ -33,7 +33,7 @@ def test_serialize_with_exception() -> None:
     exception = RuntimeError("Testing")
     check = Check(name="Test", success=False, exception=exception)
     assert check.json() == (
-        '{"name": "Test", "id": "1bab7e8d", "description": null, "severity": "common", "tags": null, "success": false, "message": null, "exception": "RuntimeError(\'Testing\')", "created_at": "2020-08-24T00:00:00", "run_at": null, "runtime": null}'
+        '{"name": "Test", "id": "1bab7e8d", "description": null, "severity": "common", "tags": null, "success": false, "message": null, "hint": null, "remedy": null, "exception": "RuntimeError(\'Testing\')", "created_at": "2020-08-24T00:00:00", "run_at": null, "runtime": null}'
     )
 
 
@@ -98,7 +98,22 @@ async def test_raises_on_invalid_signature() -> None:
     assert e
     assert (
         str(e.value)
-        == 'invalid signature for method "check_invalid" (did you forget to decorate with @check?): expected <Signature () -> servo.checks.Check>, but found <Signature () -> int>'
+        == """invalid check "check_invalid": incompatible return type annotation "<class 'int'>" in callable signature "() -> int", expected "<class 'servo.checks.Check'>\""""
+    )
+
+async def test_raises_on_invalid_return_type() -> None:
+    class MeasureChecks(BaseChecks):
+        def check_invalid(self) -> Check:
+            return 123
+
+    with pytest.raises(TypeError) as e:
+        config = BaseConfiguration()
+        await MeasureChecks.run(config)
+
+    assert e
+    assert (
+        str(e.value)
+        == """invalid check "check_invalid": expected return type "Check" but handler returned "int\""""
     )
 
 
@@ -150,7 +165,7 @@ async def test_check_aborts_on_failed_requirement() -> None:
             return Check(name="1", success=True)
 
         def check_two(self) -> Check:
-            return Check(name="2", success=False, severity=ErrorSeverity.CRITICAL)
+            return Check(name="2", success=False, severity=ErrorSeverity.critical)
 
         def check_three(self) -> Check:
             return Check(name="3", success=True)
@@ -203,13 +218,13 @@ def test_valid_check_decorator_return_values(return_value, success, message) -> 
         (
             123,
             ValueError,
-            ('caught exception: check method returned unexpected value of type "int"'),
+            ('caught exception (ValueError): check method returned unexpected value of type "int"'),
         ),
         (
             (False, 187),
             ValueError,
             (
-                "caught exception: 1 validation error for Check\n"
+                "caught exception (ValidationError): 1 validation error for Check\n"
                 "message\n"
                 "  str type expected (type=type_error.str)"
             ),
@@ -218,7 +233,7 @@ def test_valid_check_decorator_return_values(return_value, success, message) -> 
             (666, "fail"),
             ValueError,
             (
-                "caught exception: 1 validation error for Check\n"
+                "caught exception (ValidationError): 1 validation error for Check\n"
                 "success\n"
                 "  value could not be parsed to a boolean (type=type_error.bool)"
             ),
@@ -323,6 +338,7 @@ def test_decorating_invalid_signatures() -> None:
 
 
 @pytest.mark.freeze_time("2020-08-25", auto_tick_seconds=15)
+@pytest.mark.event_loop_policy("default")
 async def test_check_timer() -> None:
     @check("Check timer")
     def check_test() -> None:
@@ -331,11 +347,12 @@ async def test_check_timer() -> None:
     check_ = check_test()
     assert check_
     assert isinstance(check_, Check)
-    assert check_.run_at == datetime(2020, 8, 25, 0, 0, 15)
+    assert check_.run_at == datetime(2020, 8, 25, 0, 0, 30)
     assert check_.runtime == "15s"
 
 
 @pytest.mark.freeze_time("2020-08-25", auto_tick_seconds=15)
+@pytest.mark.event_loop_policy("default")
 async def test_decorate_async() -> None:
     @check("Check async")
     async def check_test() -> None:
@@ -344,7 +361,7 @@ async def test_decorate_async() -> None:
     check_ = await check_test()
     assert check_
     assert isinstance(check_, Check)
-    assert check_.run_at == datetime(2020, 8, 25, 0, 0, 15)
+    assert check_.run_at == datetime(2020, 8, 25, 0, 0, 30)
     assert check_.runtime == "15s"
 
 
@@ -474,7 +491,7 @@ async def test_filtering(name, id, tags, expected_ids) -> None:
 
 
 class RequirementChecks(BaseChecks):
-    @check("required-1", severity=ErrorSeverity.CRITICAL)
+    @check("required-1", severity=ErrorSeverity.critical)
     def check_one(self) -> None:
         ...
 
@@ -505,7 +522,7 @@ class RequirementChecks(BaseChecks):
         # no filter, halt at not-required-2
         (
             None,
-            ErrorSeverity.CRITICAL,
+            ErrorSeverity.critical,
             {
                 "required-1": True,
                 "not-required-1": True,
@@ -529,7 +546,7 @@ class RequirementChecks(BaseChecks):
         # run not-required-1, trigger 1 requirement, no failures
         (
             "not-required-1",
-            ErrorSeverity.CRITICAL,
+            ErrorSeverity.critical,
             {"not-required-1": True, "required-1": True},
         ),
         # run not-required-2, trigger 1 requirement, fail
@@ -537,7 +554,7 @@ class RequirementChecks(BaseChecks):
         # run required-3, trigger 2 requirements, halt at required-2
         (
             "not-required-3",
-            ErrorSeverity.CRITICAL,
+            ErrorSeverity.critical,
             {"required-1": True, "required-2": False},
         ),
         # run all required-3, trigger 2 requirements, required-2 fails
@@ -554,7 +571,7 @@ class RequirementChecks(BaseChecks):
         # run not-required-1 and not-required-3
         (
             ("not-required-1", "not-required-3"),
-            ErrorSeverity.CRITICAL,
+            ErrorSeverity.critical,
             {
                 "required-1": True,
                 "not-required-1": True,
@@ -793,7 +810,7 @@ def test_multicheck_invalid_args() -> None:
     assert e is not None
     assert (
         str(e.value)
-        == 'invalid multicheck handler "check_invalid": unexpected parameter "foo" in signature <Signature (self, foo: int) -> int>, expected <Signature () -> Tuple[Iterable, ~CheckHandler]>'
+        == """invalid multicheck handler "check_invalid": encountered unexpected parameter "foo" in callable signature "(self, foo: int) -> int", expected "() -> Tuple[Iterable, ~CheckHandler]\""""
     )
 
 
@@ -808,7 +825,7 @@ def test_multicheck_invalid_return_type() -> None:
     assert e is not None
     assert (
         str(e.value)
-        == 'invalid multicheck handler "check_invalid": incompatible return type annotation in signature <Signature (self) -> int>, expected to match <Signature () -> Tuple[Iterable, ~CheckHandler]>'
+        == """invalid multicheck handler "check_invalid": incompatible return type annotation "<class 'int'>" in callable signature "(self) -> int", expected "typing.Tuple[typing.Iterable, ~CheckHandler]\""""
     )
 
 
@@ -852,7 +869,7 @@ async def test_handles_method_attrs() -> None:
 
 
 class WarningChecks(BaseChecks):
-    @check("warning-1", severity=ErrorSeverity.WARNING)
+    @check("warning-1", severity=ErrorSeverity.warning)
     def check_one(self) -> None:
         raise RuntimeError("Failure")
 
@@ -869,7 +886,7 @@ async def test_warnings() -> None:
             "warning-1",
             "check_one",
             False,
-            "caught exception: Failure",
+            "caught exception (RuntimeError): Failure",
         ],
         [
             "warning-2",
@@ -878,3 +895,5 @@ async def test_warnings() -> None:
             "Something may not be quite right",
         ],
     ]
+
+# TODO: add tests for default checks

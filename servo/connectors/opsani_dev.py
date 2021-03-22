@@ -279,6 +279,36 @@ class OpsaniDevChecks(servo.BaseChecks):
         assert container.resources.limits.get("cpu"), "missing limit for resource 'cpu'"
         assert container.resources.limits.get("memory"), "missing limit for resource 'memory'"
 
+    @servo.checks.require("Target container resource requests are within limits")
+    async def check_target_container_resources_within_limits(self) -> None:
+        # Load the Deployment
+        deployment = await servo.connectors.kubernetes.Deployment.read(
+            self.config.deployment,
+            self.config.namespace
+        )
+        assert deployment, f"failed to read deployment '{self.config.deployment}' in namespace '{self.config.namespace}'"
+
+        # Find the target Container
+        target_container = next(filter(lambda c: c.name == self.config.container, deployment.containers), None)
+
+        assert target_container, f"failed to find container '{self.config.container}' when verifying resource limits"
+
+        # Get resource requirements from container
+        container_cpu_request = servo.connectors.kubernetes.Millicore.parse(target_container.resources.requests["cpu"])
+        container_memory_request = servo.connectors.kubernetes.ShortByteSize.validate(target_container.resources.requests["memory"])
+
+        # Get config values
+        config_cpu_min = self.config.cpu.min
+        config_cpu_max = self.config.cpu.max
+        config_memory_min = self.config.memory.min
+        config_memory_max = self.config.memory.max
+
+        # Check values against config.
+        assert container_cpu_request >= config_cpu_min, f"target container CPU request {container_cpu_request.human_readable()} must be greater than optimizable minimum {config_cpu_min.human_readable()}"
+        assert container_cpu_request <= config_cpu_max, f"target container CPU request {container_cpu_request.human_readable()} must be less than optimizable maximum {config_cpu_max.human_readable()}"
+        assert container_memory_request >= config_memory_min, f"target container Memory request {container_memory_request.human_readable()} must be greater than optimizable minimum {config_memory_min.human_readable()}"
+        assert container_memory_request <= config_memory_max, f"target container Memory request {container_memory_request.human_readable()} must be less than optimizable maximum {config_memory_max.human_readable()}"
+
     @servo.require('Deployment "{self.config.deployment}" is ready')
     async def check_deployment(self) -> None:
         deployment = await servo.connectors.kubernetes.Deployment.read(self.config.deployment, self.config.namespace)
@@ -346,14 +376,6 @@ class OpsaniDevChecks(servo.BaseChecks):
 
     ##
     # Prometheus sidecar
-
-    @servo.checks.require("Prometheus ConfigMap exists")
-    async def check_prometheus_config_map(self) -> None:
-        config = await servo.connectors.kubernetes.ConfigMap.read(
-            "prometheus-config", self.config.namespace
-        )
-        self.logger.trace(f"read Prometheus ConfigMap: {repr(config)}")
-        assert config, "failed: no config map named 'prometheus-config'"
 
     @servo.checks.check("Prometheus sidecar is running")
     async def check_prometheus_sidecar_exists(self) -> None:
@@ -523,7 +545,7 @@ class OpsaniDevChecks(servo.BaseChecks):
             if container.name == "opsani-envoy":
                 return
 
-        command = f"kubectl exec -n {self.config.namespace} -c servo deploy/servo -- servo --token-file /servo/opsani.token inject-sidecar -n {self.config.namespace} -s {self.config.service} deployment/{self.config.deployment}"
+        command = f"kubectl exec -n {self.config.namespace} -c servo {self._servo_resource_target} -- servo --token-file /servo/opsani.token inject-sidecar -n {self.config.namespace} -s {self.config.service} deployment/{self.config.deployment}"
         raise servo.checks.CheckError(
             f"deployment '{deployment.name}' pod template spec does not include envoy sidecar container ('opsani-envoy')",
             hint=f"Inject Envoy sidecar container via: `{command}`",
@@ -571,28 +593,27 @@ class OpsaniDevChecks(servo.BaseChecks):
 
     @servo.check("Envoy proxies are being scraped")
     async def check_envoy_sidecar_metrics(self) -> str:
-        # NOTE: We don't care about the response status code, we don't want to zero the metric so that we can tell if its reporting
+        # NOTE: We don't care about the response status code, we just want to see that traffic is being metered by Envoy
         metric = servo.connectors.prometheus.PrometheusMetric(
-            "tuning_request_rate",
+            "main_request_total",
             servo.types.Unit.requests_per_second,
-            query=f'sum(rate(envoy_cluster_upstream_rq_total{{opsani_role!="tuning", kubernetes_namespace="{self.config.namespace}"}}[10s]))',
-            step="10s"
+            query=f'envoy_cluster_upstream_rq_total{{opsani_role!="tuning", kubernetes_namespace="{self.config.namespace}"}}',
         )
         client = servo.connectors.prometheus.Client(base_url=self.config.prometheus_base_url)
         response = await client.query(metric)
-        if response.data:
-            assert response.data.result_type == servo.connectors.prometheus.ResultType.vector, f"expected a vector result but found {response.data.result_type}"
-            assert len(response.data) == 1, f"expected Prometheus API to return a single result for metric '{metric.name}' but found {len(response.data)}"
-            result = response.data[0]
-            timestamp, value = result.value
-            if value in {None, 0.0}:
-                command = f"kubectl exec -n {self.config.namespace} -c servo deploy/servo -- kubectl port-forward --namespace={self.config.namespace} deploy/{self.config.deployment} 9980 & echo 'GET http://localhost:9980/' | vegeta attack -duration 15s | vegeta report -every 3s"
-                raise servo.checks.CheckError(
-                    f"Envoy is not reporting any traffic to Prometheus for metric '{metric.name}' ({metric.query})",
-                    hint=f"Send traffic to your application on port 9980. Try `{command}`",
-                    remedy=lambda: _stream_remedy_command(command)
-                )
-            return f"{metric.name}={value}{metric.unit}"
+        assert response.data, f"query returned no response data: '{metric.query}'"
+        assert response.data.result_type == servo.connectors.prometheus.ResultType.vector, f"expected a vector result but found {response.data.result_type}"
+        assert len(response.data) == 1, f"expected Prometheus API to return a single result for metric '{metric.name}' but found {len(response.data)}"
+        result = response.data[0]
+        timestamp, value = result.value
+        if value in {None, 0.0}:
+            command = f"kubectl exec -n {self.config.namespace} -c servo {self._servo_resource_target} -- sh -c \"kubectl port-forward --namespace={self.config.namespace} deploy/{self.config.deployment} 9980 & echo 'GET http://localhost:9980/' | vegeta attack -duration 10s | vegeta report -every 3s\""
+            raise servo.checks.CheckError(
+                f"Envoy is not reporting any traffic to Prometheus for metric '{metric.name}' ({metric.query})",
+                hint=f"Send traffic to your application on port 9980. Try `{command}`",
+                remedy=lambda: _stream_remedy_command(command)
+            )
+        return f"{metric.name}={value}{metric.unit}"
 
     @servo.check("Traffic is proxied through Envoy")
     async def check_service_proxy(self) -> str:
@@ -636,14 +657,14 @@ class OpsaniDevChecks(servo.BaseChecks):
     async def check_traffic_metrics(self) -> str:
         metrics = [
             servo.connectors.prometheus.PrometheusMetric(
-                "main_request_rate",
+                "main_request_total",
                 servo.types.Unit.requests_per_second,
-                query=f'sum(rate(envoy_cluster_upstream_rq_total{{opsani_role!="tuning", kubernetes_namespace="{self.config.namespace}"}}[10s]))',
+                query=f'envoy_cluster_upstream_rq_total{{opsani_role!="tuning", kubernetes_namespace="{self.config.namespace}"}}',
             ),
             servo.connectors.prometheus.PrometheusMetric(
-                "tuning_request_rate",
+                "tuning_request_total",
                 servo.types.Unit.requests_per_second,
-                query=f'rate(envoy_cluster_upstream_rq_total{{opsani_role="tuning", kubernetes_namespace="{self.config.namespace}"}}[10s])'
+                query=f'envoy_cluster_upstream_rq_total{{opsani_role="tuning", kubernetes_namespace="{self.config.namespace}"}}'
             ),
         ]
         client = servo.connectors.prometheus.Client(base_url=self.config.prometheus_base_url)
@@ -655,10 +676,17 @@ class OpsaniDevChecks(servo.BaseChecks):
 
             result = response.data[0]
             value = result.value[1]
-            assert value > 0, f"Envoy is reporting a value of {value} which is not greater than zero for metric '{metric.name}' ({metric.query})"
+            assert value is not None and value > 0.0, f"Envoy is reporting a value of {value} which is not greater than zero for metric '{metric.name}' ({metric.query})"
 
             summaries.append(f"{metric.name}={value}{metric.unit}")
             return ", ".join(summaries)
+
+    @property
+    def _servo_resource_target(self) -> str:
+        if pod_name := os.environ.get('POD_NAME'):
+            return f"pods/{pod_name}"
+        else:
+            return "deployment/servo"
 
 
 @servo.metadata(

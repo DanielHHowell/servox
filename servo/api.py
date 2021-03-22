@@ -274,24 +274,9 @@ class Mixin(abc.ABC):
                 )
 
             except (httpx.RequestError, httpx.HTTPError) as error:
-                self.logger.error(f"HTTP error \"{error.__class__.__name__}\" encountered while posting \"{event}\" event: {error}\nResponse body: {response.text}")
+                self.logger.error(f"HTTP error \"{error.__class__.__name__}\" encountered while posting \"{event}\" event: {error}")
                 self.logger.trace(devtools.pformat(event_request))
                 raise
-
-    def _post_event_sync(self, event: Events, param) -> Union[CommandResponse, Status]:
-        event_request = Request(event=event, param=param)
-        with self.servo.api_client_sync() as client:
-            try:
-                response = client.post("servo", data=event_request.json())
-                response.raise_for_status()
-            except httpx.HTTPError as error:
-                self.logger.error(
-                    f"HTTP error \"{error.__class__.__name__}\" encountered while posting {event.value} event: {error}"
-                )
-                self.logger.trace(devtools.pformat(event_request))
-                raise
-
-        return pydantic.parse_obj_as(Union[CommandResponse, Status], response.json())
 
 
 def descriptor_to_adjustments(descriptor: dict) -> List[servo.types.Adjustment]:

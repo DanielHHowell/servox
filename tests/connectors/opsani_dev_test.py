@@ -34,14 +34,6 @@ import servo.connectors.opsani_dev
 import servo.connectors.prometheus
 
 
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.event_loop_policy("default"),
-    pytest.mark.integration,
-    pytest.mark.usefixtures("kubeconfig", "kubernetes_asyncio_config"),
-]
-
-
 @pytest.fixture
 def config(kube) -> servo.connectors.opsani_dev.OpsaniDevConfiguration:
     return servo.connectors.opsani_dev.OpsaniDevConfiguration(
@@ -49,8 +41,8 @@ def config(kube) -> servo.connectors.opsani_dev.OpsaniDevConfiguration:
         deployment="fiber-http",
         container="fiber-http",
         service="fiber-http",
-        cpu=servo.connectors.kubernetes.CPU(min="250m", max="4000m", step="125m"),
-        memory=servo.connectors.kubernetes.Memory(min="256 MiB", max="4.0 GiB", step="128 MiB"),
+        cpu=servo.connectors.kubernetes.CPU(min="125m", max="4000m", step="125m"),
+        memory=servo.connectors.kubernetes.Memory(min="128 MiB", max="4.0 GiB", step="128 MiB"),
     )
 
 
@@ -86,6 +78,8 @@ class TestConfig:
         "prometheus.yaml",
     ],
 )
+@pytest.mark.integration
+@pytest.mark.usefixtures("kubeconfig", "kubernetes_asyncio_config")
 class TestIntegration:
     class TestChecksOriginalState:
         @pytest.fixture(autouse=True)
@@ -99,8 +93,16 @@ class TestIntegration:
             # These env vars are set by our manifests
             pods = kube.get_pods(labels={ "app.kubernetes.io/name": "servo"})
             assert pods, "servo is not deployed"
-            os.environ['POD_NAME'] = list(pods.keys())[0]
-            os.environ["POD_NAMESPACE"] = kube.namespace
+            try:
+                os.environ['POD_NAME'] = list(pods.keys())[0]
+                os.environ["POD_NAMESPACE"] = kube.namespace
+
+                yield
+
+            finally:
+                os.environ.pop('POD_NAME', None)
+                os.environ.pop('POD_NAMESPACE', None)
+
 
         @pytest.mark.parametrize(
             "resource", ["namespace", "deployment", "container", "service"]
@@ -111,17 +113,31 @@ class TestIntegration:
             result = await checks.run_one(id=f"check_kubernetes_{resource}")
             assert result.success
 
+        async def test_target_container_resources_within_limits(
+            self, kube, checks: servo.connectors.opsani_dev.OpsaniDevChecks, config: servo.connectors.opsani_dev.OpsaniDevConfiguration
+        ) -> None:
+            config.cpu.min = "125m"
+            config.cpu.max = "2000m"
+            config.memory.min = "128MiB"
+            config.memory.max = "4GiB"
+            result = await checks.run_one(id=f"check_target_container_resources_within_limits")
+            assert result.success, f"Expected success but got: {result}"
+
+        async def test_target_container_resources_outside_of_limits(
+            self, kube, checks: servo.connectors.opsani_dev.OpsaniDevChecks, config: servo.connectors.opsani_dev.OpsaniDevConfiguration
+        ) -> None:
+            config.cpu.min = "4000m"
+            config.cpu.max = "5000m"
+            config.memory.min = "2GiB"
+            config.memory.min = "4GiB"
+            result = await checks.run_one(id=f"check_target_container_resources_within_limits")
+            assert result.exception
+
         async def test_service_routes_traffic_to_deployment(
             self, kube, checks: servo.connectors.opsani_dev.OpsaniDevChecks
         ) -> None:
             result = await checks.run_one(id=f"check_service_routes_traffic_to_deployment")
             assert result.success, f"Failed with message: {result.message}"
-
-        async def test_prometheus_configmap_exists(
-            self, kube, checks: servo.connectors.opsani_dev.OpsaniDevChecks
-        ) -> None:
-            result = await checks.run_one(id=f"check_prometheus_config_map")
-            assert result.success
 
         async def test_prometheus_sidecar_exists(
             self, kube, checks: servo.connectors.opsani_dev.OpsaniDevChecks
@@ -201,8 +217,6 @@ class TestIntegration:
                 assert check.message is not None
                 assert isinstance(check.exception, httpx.HTTPStatusError)
 
-@pytest.mark.clusterrolebinding('cluster-admin')
-@pytest.mark.usefixtures("kubernetes_asyncio_config")
 @pytest.mark.applymanifests(
     "opsani_dev",
     files=[
@@ -211,6 +225,9 @@ class TestIntegration:
         "prometheus.yaml",
     ],
 )
+@pytest.mark.integration
+@pytest.mark.usefixtures("kubeconfig", "kubernetes_asyncio_config")
+@pytest.mark.clusterrolebinding('cluster-admin')
 class TestServiceMultiport:
     @pytest.fixture
     async def multiport_service(self, kube, checks: servo.connectors.opsani_dev.OpsaniDevChecks) -> None:
@@ -413,8 +430,6 @@ class TestServiceMultiport:
                                 # case there are other things running in the cluster
                                 return list(filter(lambda t: t.labels["kubernetes_namespace"] == kube.namespace, targets.active))
 
-                        await asyncio.sleep(0.25)
-
                 await wait_for_targets_to_be_scraped()
                 await assert_check(checks.run_one(id=f"check_prometheus_targets"))
 
@@ -472,7 +487,6 @@ class TestServiceMultiport:
                 servo.logger.critical("Step 8 - Verify Service traffic makes it through Envoy and gets aggregated by Prometheus")
                 async with kube_port_forward(f"service/fiber-http", port) as service_url:
                     await load_generator(service_url).run_until(wait_for_targets_to_be_scraped())
-                    await load_generator(service_url).run_until(wait_for_targets_to_be_scraped())
 
                 targets = await wait_for_targets_to_be_scraped()
                 assert len(targets) == 2
@@ -524,6 +538,7 @@ class TestServiceMultiport:
                         results = await checks.run_all()
                         next_failure = next(filter(lambda r: r.success is False, results), None)
                         if next_failure:
+                            servo.logger.critical(f"Attempting to remedy failing check: {devtools.pformat(next_failure)}")
                             await _remedy_check(
                                 next_failure.id,
                                 config=checks.config,
@@ -719,7 +734,6 @@ async def change_to_resource(resource: servo.connectors.kubernetes.KubernetesMod
 
     if hasattr(status, "observed_generation"):
         while status.observed_generation == resource.status.observed_generation:
-            await asyncio.sleep(0.05)
             await resource.refresh()
 
     # wait for the change to roll out
@@ -764,7 +778,7 @@ class LoadGenerator(pydantic.BaseModel):
             started_at = datetime.datetime.now()
             async with httpx.AsyncClient() as client:
                 while not self._event.is_set():
-                    servo.logger.info(f"Sending traffic to {self.url}...")
+                    servo.logger.trace(f"Sending traffic to {self.url}...")
                     try:
                         await client.send(self.request, timeout=1.0)
                     except httpx.TimeoutException as err:
@@ -896,7 +910,7 @@ async def _remedy_check(id: str, *, config, deployment, kube_port_forward, load_
             servo.logger.info(f"injecting Envoy sidecar to Deployment {deployment.name} PodSpec")
             await deployment.inject_sidecar('opsani-envoy', 'opsani/envoy-proxy:latest', service="fiber-http")
 
-    elif id in {'check_pod_envoy_sidecars', 'check_prometheus_is_accessible'}:
+    elif id in {'check_prometheus_sidecar_exists', 'check_pod_envoy_sidecars', 'check_prometheus_is_accessible'}:
         servo.logger.warning(f"check failed: {id}")
         pass
 
@@ -904,7 +918,6 @@ async def _remedy_check(id: str, *, config, deployment, kube_port_forward, load_
         # Step 4
         servo.logger.critical("Step 4 - Check that Prometheus is discovering and scraping annotated Pods")
         servo.logger.info("waiting for Prometheus to scrape our Pods")
-        await asyncio.sleep(0.25)
 
     elif id == 'check_envoy_sidecar_metrics':
         # Step 5

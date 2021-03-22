@@ -43,11 +43,25 @@ jobs:
         with:
           python-version: '3.8'
           architecture: x64
+      - name: Set up Poetry cache
+        uses: actions/cache@v2
+        id: cached-poetry
+        with:
+          path: ~/.poetry
+          key: poetry-${{ runner.os }}-1.1.5
       - name: Install and configure Poetry
         uses: snok/install-poetry@v1.1.2
+        if: steps.cached-poetry.outputs.cache-hit != 'true'
         with:
+          version: 1.1.5
           virtualenvs-create: true
           virtualenvs-in-project: true
+      - name: Source Poetry env
+        run: |
+          source "$HOME"/.poetry/env
+          poetry config virtualenvs.create true
+          poetry config virtualenvs.in-project true
+          echo "$HOME/.poetry/bin" >> $GITHUB_PATH
       - name: Set up dependencies cache
         uses: actions/cache@v2
         id: cached-poetry-dependencies
@@ -82,11 +96,25 @@ jobs:
       with:
         python-version: '3.8'
         architecture: x64
+    - name: Set up Poetry cache
+      uses: actions/cache@v2
+      id: cached-poetry
+      with:
+        path: ~/.poetry
+        key: poetry-${{ runner.os }}-1.1.5
     - name: Install and configure Poetry
       uses: snok/install-poetry@v1.1.2
+      if: steps.cached-poetry.outputs.cache-hit != 'true'
       with:
+        version: 1.1.5
         virtualenvs-create: true
         virtualenvs-in-project: true
+    - name: Source Poetry env
+      run: |
+        source "$HOME"/.poetry/env
+        poetry config virtualenvs.create true
+        poetry config virtualenvs.in-project true
+        echo "$HOME/.poetry/bin" >> $GITHUB_PATH
     - name: Set up root + dependencies cache
       uses: actions/cache@v2
       id: cached-project
@@ -98,7 +126,7 @@ jobs:
       run: poetry install --no-interaction
     - name: Run tests
       run: |
-        poetry run pytest -T unit -n 6 --dist loadscope \
+        poetry run pytest -T unit -n 6 \
           --cov=servo --cov-config=setup.cfg --doctest-modules \
           --cov-report=term-missing:skip-covered \
           --cov-report=xml:artifacts/coverage.xml --cov-report=html:artifacts/coverage-html \
@@ -132,11 +160,25 @@ jobs:
       with:
         python-version: '3.8'
         architecture: x64
+    - name: Set up Poetry cache
+      uses: actions/cache@v2
+      id: cached-poetry
+      with:
+        path: ~/.poetry
+        key: poetry-${{ runner.os }}-1.1.5
     - name: Install and configure Poetry
       uses: snok/install-poetry@v1.1.2
+      if: steps.cached-poetry.outputs.cache-hit != 'true'
       with:
+        version: 1.1.5
         virtualenvs-create: true
         virtualenvs-in-project: true
+    - name: Source Poetry env
+      run: |
+        source "$HOME"/.poetry/env
+        poetry config virtualenvs.create true
+        poetry config virtualenvs.in-project true
+        echo "$HOME/.poetry/bin" >> $GITHUB_PATH
     - name: Install Vegeta
       run: |
         wget https://github.com/tsenart/vegeta/releases/download/v12.8.4/vegeta_12.8.4_linux_amd64.tar.gz
@@ -158,17 +200,24 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: us-west-2
     - name: Create tests/kubeconfig
-      uses: kodermax/kubectl-aws-eks@master
+      run: |
+        mkdir ~/.kube
+        echo "$KUBE_CONFIG_DATA" | base64 --decode > $HOME/.kube/config
+        kubectl config view --minify --flatten > tests/kubeconfig
+      shell: bash
       env:
         KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
-      with:
-        args: config view --minify --flatten > tests/kubeconfig
+
     - name: Install AWS IAM Authenticator
       uses: prepor/action-aws-iam-authenticator@master
     - name: Run integration tests
       run: |
-        poetry run pytest -n 4 --dist loadscope --tx "4*popen//python=python3.8" \
+        poetry run pytest -n 8 \
           -T integration --verbose --durations=0 --durations-min=5
+    - uses: actions/upload-artifact@v2
+      with:
+        name: integration-test-logs
+        path: logs/
 
   system:
     name: Run System Tests
@@ -191,11 +240,25 @@ jobs:
       with:
         python-version: '3.8'
         architecture: x64
+    - name: Set up Poetry cache
+      uses: actions/cache@v2
+      id: cached-poetry
+      with:
+        path: ~/.poetry
+        key: poetry-${{ runner.os }}-1.1.5
     - name: Install and configure Poetry
       uses: snok/install-poetry@v1.1.2
+      if: steps.cached-poetry.outputs.cache-hit != 'true'
       with:
+        version: 1.1.5
         virtualenvs-create: true
         virtualenvs-in-project: true
+    - name: Source Poetry env
+      run: |
+        source "$HOME"/.poetry/env
+        poetry config virtualenvs.create true
+        poetry config virtualenvs.in-project true
+        echo "$HOME/.poetry/bin" >> $GITHUB_PATH
     - name: Set up root + dependencies cache
       uses: actions/cache@v2
       id: cached-project
@@ -212,14 +275,16 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: us-west-2
     - name: Create tests/kubeconfig
-      uses: kodermax/kubectl-aws-eks@master
+      run: |
+        mkdir ~/.kube
+        echo "$KUBE_CONFIG_DATA" | base64 --decode > $HOME/.kube/config
+        kubectl config view --minify --flatten > tests/kubeconfig
+      shell: bash
       env:
         KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
-      with:
-        args: config view --minify --flatten > tests/kubeconfig
     - name: Fix permissions
       run: |
-        if [ -f /home/runner/.kube ]; then
+        if [ -d /home/runner/.kube ]; then
           sudo chown -R runner:docker /home/runner/.kube
         else
           mkdir /home/runner/.kube
@@ -242,5 +307,9 @@ jobs:
       uses: prepor/action-aws-iam-authenticator@master
     - name: Run system tests
       run: |
-        poetry run pytest -n 6 --dist loadscope \
+        poetry run pytest -n 6 \
           -T system --verbose --durations=0 --durations-min=5
+    - uses: actions/upload-artifact@v2
+      with:
+        name: system-test-logs
+        path: logs/

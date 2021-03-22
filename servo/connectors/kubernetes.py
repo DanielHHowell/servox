@@ -101,7 +101,7 @@ class Condition(servo.logging.Mixin):
 
 async def wait_for_condition(
     condition: Condition,
-    interval: servo.DurationDescriptor = 1,
+    interval: servo.DurationDescriptor = 0.05,
     fail_on_api_error: bool = True,
 ) -> None:
     """Wait for a condition to be met.
@@ -586,7 +586,7 @@ class Namespace(KubernetesModel):
                 body=self.obj,
             )
 
-    async def delete(self, options:kubernetes_asyncio.client.V1DeleteOptions = None) ->kubernetes_asyncio.client.V1Status:
+    async def delete(self, options:kubernetes_asyncio.client.V1DeleteOptions = None) -> kubernetes_asyncio.client.V1Status:
         """Delete the Namespace.
 
         Args:
@@ -916,6 +916,7 @@ class Pod(KubernetesModel):
         self.logger.info(f'patching pod "{self.name}"')
         self.logger.trace(f"pod: {self.obj}")
         async with self.api_client() as api_client:
+            api_client.api_client.set_default_header('content-type', 'application/strategic-merge-patch+json')
             await api_client.patch_namespaced_pod(
                 name=self.name,
                 namespace=self.namespace,
@@ -1182,6 +1183,7 @@ class Service(KubernetesModel):
         TODO: Add docs....
         """
         async with self.api_client() as api_client:
+            api_client.api_client.set_default_header('content-type', 'application/strategic-merge-patch+json')
             await api_client.patch_namespaced_service(
                 name=self.name,
                 namespace=self.namespace,
@@ -1462,6 +1464,7 @@ class Deployment(KubernetesModel):
     async def patch(self) -> None:
         """Update the changed attributes of the Deployment."""
         async with self.api_client() as api_client:
+            api_client.api_client.set_default_header('content-type', 'application/strategic-merge-patch+json')
             self.obj = await api_client.patch_namespaced_deployment(
                 name=self.name,
                 namespace=self.namespace,
@@ -1860,8 +1863,9 @@ class Deployment(KubernetesModel):
                         raise servo.AdjustmentRejectedError(reason=str(deployment))
 
                     # Check that the conditions aren't reporting a failure
-                    self._check_conditions(status.conditions)
-                    await self._check_pod_conditions()
+                    if status.conditions:
+                        self._check_conditions(status.conditions)
+                        await self._check_pod_conditions()
 
                     # Early events in the watch may be against previous generation
                     if status.observed_generation == observed_generation:
@@ -2161,7 +2165,7 @@ class Millicore(int):
             else:
                 return cls(int(float(v) * 1000))
         elif isinstance(v, (int, float, decimal.Decimal)):
-            return cls(int(v * 1000))
+            return cls(int(float(v) * 1000))
         else:
             raise ValueError("could not parse millicore value")
 
@@ -2645,7 +2649,7 @@ class CanaryOptimization(BaseOptimization):
                 config.strategy.alias
                 if isinstance(config.strategy, CanaryOptimizationStrategyConfiguration)
                 and config.strategy.alias
-                else f"{deployment.name}/{tuning_container.name}-canary"
+                else f"{deployment.name}/{tuning_container.name}-tuning"
             )
 
             return cls(
@@ -3522,7 +3526,7 @@ class KubernetesConnector(servo.BaseConnector):
                         raise servo.AdjustmentRejectedError(
                             reason="Optimization target became unready during adjustment settlement period"
                         )
-                    await asyncio.sleep(servo.Duration('5s').total_seconds())
+                    await asyncio.sleep(servo.Duration('50ms').total_seconds())
 
             await asyncio.gather(
                 progress.watch(progress_logger),

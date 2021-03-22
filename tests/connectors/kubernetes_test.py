@@ -34,10 +34,6 @@ from servo.errors import AdjustmentRejectedError
 from servo.types import Adjustment
 from tests.helpers import *
 
-# pytestmark = [
-#     pytest.mark.asyncio,
-#     pytest.mark.event_loop_policy("uvloop"),
-# ]
 
 class TestDNSSubdomainName:
     @pytest.fixture
@@ -883,9 +879,9 @@ def config(namespace: str) -> KubernetesConfiguration:
 @pytest.mark.applymanifests("../manifests", files=["fiber-http-opsani-dev.yaml"])
 class TestKubernetesConnectorIntegration:
     @pytest.fixture(autouse=True)
-    async def _wait_for_manifests(self, kube):
-        kube.wait_for_registered(timeout=30.0)
-        await asyncio.sleep(0.00001)
+    async def _wait_for_manifests(self, kube, config):
+        kube.wait_for_registered()
+        config.timeout = "5m"
 
     @pytest.fixture
     def namespace(self, kube: kubetest.client.TestClient) -> str:
@@ -1010,28 +1006,24 @@ class TestKubernetesConnectorIntegration:
 
     ##
     # Canary Tests
-    async def test_create_canary(self, tuning_config, namespace: str) -> None:
-        connector = KubernetesConnector(config=tuning_config)
-        dep = await Deployment.read("fiber-http", namespace)
-        debug(dep)
+    # async def test_create_canary(self, tuning_config, namespace: str) -> None:
+   #      connector = KubernetesConnector(config=tuning_config)
+   #      dep = await Deployment.read("fiber-http", namespace)
+   #      debug(dep)
         # description = await connector.startup()
         # debug(description)
 
     async def test_adjust_tuning_insufficient_resources(
         self,
         tuning_config: KubernetesConfiguration,
-        namespace
+        namespace,
+        kube
     ) -> None:
-        await asyncio.sleep(1.0)
-        # debug("SETTING TIMEOUT TO 2s")
-        tuning_config.timeout = "2s"
-        # for deployment_config in tuning_config.deployments:
-        #     deployment_config.timeout = "2s"
-        # debug("SET TIMEOUT TO 2s: ", tuning_config.timeout)
+        tuning_config.timeout = "3s"
         connector = KubernetesConnector(config=tuning_config)
 
         adjustment = Adjustment(
-            component_name="fiber-http/fiber-http-canary",
+            component_name="fiber-http/fiber-http-tuning",
             setting_name="mem",
             value="128Gi", # impossible right?
         )
@@ -1043,60 +1035,60 @@ class TestKubernetesConnectorIntegration:
 
 
     async def test_adjust_tuning_cpu_with_settlement(self, tuning_config, namespace, kube):
-        await asyncio.sleep(1.0)
         connector = KubernetesConnector(config=tuning_config)
         adjustment = Adjustment(
-            component_name="fiber-http/fiber-http-canary",
+            component_name="fiber-http/fiber-http-tuning",
             setting_name="cpu",
             value=".250",
         )
-        control = servo.Control(settlement='1s')
+
+        control = servo.Control(settlement='50ms')
         description = await connector.adjust([adjustment], control)
         assert description is not None
-        setting = description.get_setting('fiber-http/fiber-http-canary.cpu')
+        setting = description.get_setting('fiber-http/fiber-http-tuning.cpu')
         assert setting
         assert setting.value == 250
 
-    async def test_apply_no_changes(self):
-        # resource_version stays the same and early exits
-        pass
-
-
-    async def test_apply_metadata_changes(self):
-        # Update labels or something that doesn't matter
-        # Detect by never getting a progressing event
-        pass
-
-
-    async def test_apply_replica_change(self):
-        # bump the count, observed_generation goes up
-        # wait for the counts to settle
-        ...
-
-
-    async def test_apply_memory_change(self):
-        # bump the count, observed_generation goes up
-        # wait for the counts to settle
-        ...
-
-
-    async def test_apply_cpu_change(self):
-        # bump the count, observed_generation goes up
-        # wait for the counts to settle
-        ...
-
-
-    async def test_apply_unschedulable_memory_request(self):
-        # bump the count, observed_generation goes up
-        # wait for the counts to settle
-        ...
-
-
-    async def test_apply_restart_strategy(self):
-        # Make sure we can watch a non-rolling update
-        # .spec.strategy specifies the strategy used to replace old Pods by new ones. .spec.strategy.type can be "Recreate" or "RollingUpdate". "RollingUpdate" is the default value.
-        # Recreate Deployment
-        ...
+    # async def test_apply_no_changes(self):
+#         # resource_version stays the same and early exits
+#         pass
+#
+#
+#     async def test_apply_metadata_changes(self):
+#         # Update labels or something that doesn't matter
+#         # Detect by never getting a progressing event
+#         pass
+#
+#
+#     async def test_apply_replica_change(self):
+#         # bump the count, observed_generation goes up
+#         # wait for the counts to settle
+#         ...
+#
+#
+#     async def test_apply_memory_change(self):
+#         # bump the count, observed_generation goes up
+#         # wait for the counts to settle
+#         ...
+#
+#
+#     async def test_apply_cpu_change(self):
+#         # bump the count, observed_generation goes up
+#         # wait for the counts to settle
+#         ...
+#
+#
+#     async def test_apply_unschedulable_memory_request(self):
+#         # bump the count, observed_generation goes up
+#         # wait for the counts to settle
+#         ...
+#
+#
+#     async def test_apply_restart_strategy(self):
+#         # Make sure we can watch a non-rolling update
+#         # .spec.strategy specifies the strategy used to replace old Pods by new ones. .spec.strategy.type can be "Recreate" or "RollingUpdate". "RollingUpdate" is the default value.
+#         # Recreate Deployment
+#         ...
 
 
     # TODO: Put a fiber-http deployment live. Create a config and describe it.
@@ -1133,7 +1125,7 @@ class TestKubernetesConnectorIntegrationUnreadyCmd:
 
     async def test_adjust_never_ready(self, config, kube: kubetest.client.TestClient) -> None:
         # new_dep = kube.load_deployment(abspath("../manifests/fiber-http-opsani-dev.yaml")) Why doesn't this work???? Had to use apply_manifests instead
-        config.timeout = "5s"
+        config.timeout = "3s"
         connector = KubernetesConnector(config=config)
 
         adjustment = Adjustment(

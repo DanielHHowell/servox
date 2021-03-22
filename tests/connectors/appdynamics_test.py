@@ -1,15 +1,21 @@
+import pytest
 import datetime
 import re
 
 import httpx
-import pytest
 import respx
 import freezegun
 import pydantic
 
-from servo.connectors.appdynamics import AppdynamicsChecks, AppdynamicsConfiguration, AppdynamicsMetric, AppdynamicsRequest, AppdynamicsConnector
+import servo
 from servo.types import *
-
+from servo.connectors.appdynamics import (
+    AppdynamicsChecks,
+    AppdynamicsConfiguration,
+    AppdynamicsMetric,
+    AppdynamicsRequest,
+    AppdynamicsConnector
+)
 
 class TestAppdynamicsMetric:
 
@@ -17,7 +23,7 @@ class TestAppdynamicsMetric:
     def test_query_required(self):
         try:
             AppdynamicsMetric(
-                name="throughput", unit=Unit.REQUESTS_PER_MINUTE, query=None
+                name="throughput", unit=Unit.requests_per_minute, query=None
             )
         except pydantic.ValidationError as error:
             assert {
@@ -31,7 +37,11 @@ class TestAppdynamicsConfiguration:
 
     @pytest.fixture()
     def appdynamics_config(self) -> AppdynamicsConfiguration:
-        return AppdynamicsConfiguration(base_url="http://localhost:8090", metrics=[], api_key="abcd12345")
+        return AppdynamicsConfiguration(metrics=[],
+                                        username='user',
+                                        password='pass',
+                                        account='acc',
+                                        app_id='app')
 
     def test_url_required(self, appdynamics_config):
         try:
@@ -45,23 +55,43 @@ class TestAppdynamicsConfiguration:
 
     def test_base_url_is_rstripped(self):
         config = AppdynamicsConfiguration(
-            base_url="http://appdynamics.com/some/path/", metrics=[], api_key="abcd12345"
+            base_url="http://appdynamics.com/some/path/",
+            metrics=[],
+            username='user',
+            password='pass',
+            account='acc',
+            app_id='app'
         )
         assert config.base_url == "http://appdynamics.com/some/path"
 
     def test_supports_localhost_url(self):
-        config = AppdynamicsConfiguration(base_url="http://localhost:8090", metrics=[], api_key="abcd12345")
+        config = AppdynamicsConfiguration(base_url="http://localhost:8090",
+                                          metrics=[],
+                                          username='user',
+                                          password='pass',
+                                          account='acc',
+                                          app_id='app')
         assert config.base_url == "http://localhost:8090"
 
     def test_supports_cluster_url(self):
         config = AppdynamicsConfiguration(
-            base_url="http://appdynamics.com:8090", metrics=[], api_key="abcd12345"
+            base_url="http://appdynamics.com:8090",
+            metrics=[],
+            username='user',
+            password='pass',
+            account='acc',
+            app_id='app'
         )
         assert config.base_url == "http://appdynamics.com:8090"
 
     def test_rejects_invalid_url(self):
         try:
-            AppdynamicsConfiguration(base_url="gopher://this-is-invalid", api_key="abcd12345")
+            AppdynamicsConfiguration(base_url="gopher://this-is-invalid",
+                                     metrics=[],
+                                     username='user',
+                                     password='pass',
+                                     account='acc',
+                                     app_id='app')
         except pydantic.ValidationError as error:
             assert {
                 "loc": ("base_url",),
@@ -77,7 +107,12 @@ class TestAppdynamicsConfiguration:
 
     def test_api_url(self):
         config = AppdynamicsConfiguration(
-            base_url="http://appdynamics.com:8090", metrics=[], api_key='abc12345', app_id='demo-app'
+            base_url="http://appdynamics.com:8090",
+            metrics=[],
+            username='user',
+            password='pass',
+            account='acc',
+            app_id='app'
         )
         assert (
             config.api_url == "http://appdynamics.com:8090/controller/rest/"
@@ -86,7 +121,11 @@ class TestAppdynamicsConfiguration:
     # Metrics
     def test_metrics_required(self):
         try:
-            AppdynamicsConfiguration(metrics=None, api_key='abc12345', app_id='demo-app')
+            AppdynamicsConfiguration(metrics=None,
+                                     username='user',
+                                     password='pass',
+                                     account='acc',
+                                     app_id='app')
         except pydantic.ValidationError as error:
             assert {
                 "loc": ("metrics",),
@@ -94,119 +133,132 @@ class TestAppdynamicsConfiguration:
                        "type": "type_error.none.not_allowed",
             } in error.errors()
 
-    # Generation
-    def test_generate_default_config(self):
-        config = AppdynamicsConfiguration.generate()
-        assert config.yaml() == (
-            "description: Update the api_key, base_url and metrics to match your Appdynamics configuration\n"
-            "api_key: '**********'\n"
-            "app_id: demo-app\n"
-            "base_url: http://appdynamics.com:8090\n"
-            "metrics:\n"
-            "- name: throughput\n"
-            "  unit: rpm\n"
-            "  query: avg(ts(appdynamics.apm.overall.calls_per_min, env=foo and app=my-app))\n"
-            "  granularity: m\n"
-            "  summarized_by: LAST\n"
-            "- name: error_rate\n"
-            "  unit: count\n"
-            "  query: avg(ts(appdynamics.apm.transactions.errors_per_min, env=foo and app=my-app))\n"
-            "  granularity: m\n"
-            "  summarized_by: LAST\n"
-        )
-
 
 class TestAppdynamicsRequest:
     @freezegun.freeze_time("2020-01-01")
     def test_url(self):
         request = AppdynamicsRequest(
-            base_url="http://appdynamics.com:8090",
+            base_url="http://appdynamics.com",
             start=datetime.datetime.now(),
             end=datetime.datetime.now() + Duration("36h"),
             metric=AppdynamicsMetric(
                 "throughput",
-                servo.Unit.REQUESTS_PER_MINUTE,
-                query='rate(ts("heapster.node.network.tx", cluster="idps-preprod-west2.cluster.k8s.local"))',
+                servo.Unit.requests_per_minute,
+                query='Overall Application Performance|Calls per Minute',
             ),
         )
         assert (
             request.endpoint
-            == 'metric-path=rate(ts("heapster.node.network.tx", cluster="idps-preprod-west2.cluster.k8s.local"))&time-range-type=BETWEEN_TIMESstart-time=1577836800.0&end-time=1577966400.0'
+            == '?metric-path=Overall Application Performance|Calls per Minute&time-range-type=BETWEEN_TIMES&start-time=1577836800000&end-time=1577966400000&rollup=false&output=JSON'
         )
 
 
-heapster_node_network_tx = {
-    'granularity': 60,
-    'name': 'rate(ts("heapster.node.network.tx", '
-            'cluster="idps-preprod-west2.cluster.k8s.local"))',
-    'query': 'rate(ts("heapster.node.network.tx", '
-             'cluster="idps-preprod-west2.cluster.k8s.local"))',
-    'stats': {'buffer_keys': 154,
-              'cached_compacted_keys': 0,
-              'compacted_keys': 24,
-              'compacted_points': 12440,
-              'cpu_ns': 36609718,
-              'distributions': 0,
-              'dropped_distributions': 0,
-              'dropped_edges': 0,
-              'dropped_metrics': 0,
-              'dropped_spans': 0,
-              'edges': 0,
-              'keys': 168,
-              'latency': 11,
-              'metrics': 12584,
-              'points': 12584,
-              'queries': 108,
-              'query_tasks': 0,
-              's3_keys': 0,
-              'skipped_compacted_keys': 22,
-              'spans': 0,
-              'summaries': 12584},
-    'timeseries': [
-        {'data': [[1604626020, 68441.23333333334],
-                  [1604626080, 75125.6],
-                  [1604626140, 59805.666666666664]],
-         'host': 'ip-10-131-115-108.us-west-2.compute.internal',
-         'label': 'heapster.node.network.tx',
-         'tags': {'cluster': 'idps-preprod-west2.cluster.k8s.local',
-                  'label.beta.kubernetes.io/arch': 'amd64',
-                  'label.beta.kubernetes.io/instance-type': 'm5.2xlarge',
-                  'label.beta.kubernetes.io/os': 'linux',
-                  'label.failure-domain.beta.kubernetes.io/region': 'us-west-2',
-                  'label.failure-domain.beta.kubernetes.io/zone': 'us-west-2b',
-                  'label.kops.k8s.io/instancegroup': 'iks-system',
-                  'label.kubernetes.io/arch': 'amd64',
-                  'label.kubernetes.io/hostname': 'ip-10-131-115-108.us-west-2.compute.internal',
-                  'label.kubernetes.io/os': 'linux',
-                  'label.kubernetes.io/role': 'node',
-                  'label.node.kubernetes.io/instance-type': 'm5.2xlarge',
-                  'label.topology.kubernetes.io/region': 'us-west-2',
-                  'label.topology.kubernetes.io/zone': 'us-west-2b',
-                  'nodename': 'ip-10-131-115-108.us-west-2.compute.internal',
-                  'type': 'node'}},
-        {'data': [[1604626020, 33849.583333333336],
-                  [1604626080, 48680.51666666667],
-                  [1604626140, 34244.1]],
-         'host': 'ip-10-131-115-88.us-west-2.compute.internal',
-         'label': 'heapster.node.network.tx',
-         'tags': {'cluster': 'idps-preprod-west2.cluster.k8s.local',
-                  'label.beta.kubernetes.io/arch': 'amd64',
-                  'label.beta.kubernetes.io/instance-type': 'm5.2xlarge',
-                  'label.beta.kubernetes.io/os': 'linux',
-                  'label.failure-domain.beta.kubernetes.io/region': 'us-west-2',
-                  'label.failure-domain.beta.kubernetes.io/zone': 'us-west-2b',
-                  'label.kops.k8s.io/instancegroup': 'iks-system',
-                  'label.kubernetes.io/arch': 'amd64',
-                  'label.kubernetes.io/hostname': 'ip-10-131-115-88.us-west-2.compute.internal',
-                  'label.kubernetes.io/os': 'linux',
-                  'label.kubernetes.io/role': 'node',
-                  'label.node.kubernetes.io/instance-type': 'm5.2xlarge',
-                  'label.topology.kubernetes.io/region': 'us-west-2',
-                  'label.topology.kubernetes.io/zone': 'us-west-2b',
-                  'nodename': 'ip-10-131-115-88.us-west-2.compute.internal',
-                  'type': 'node'}}],
-    'traceDimensions': []
-}
+overall_application_performance_throughput = [{
+    'frequency': 'ONE_MIN',
+    'metricId': 11318904,
+    'metricName': 'BTM|Application Summary|Calls per Minute',
+    'metricPath': 'Overall Application Performance|Calls per Minute',
+    'metricValues': [{'count': 5,
+                      'current': 2098,
+                      'max': 1119,
+                      'min': 12,
+                      'occurrences': 1,
+                      'standardDeviation': 0,
+                      'startTimeInMillis': 1614647040000,
+                      'sum': 2098,
+                      'useRange': False,
+                      'value': 2098},
+                     {'count': 5,
+                      'current': 1249,
+                      'max': 615,
+                      'min': 12,
+                      'occurrences': 1,
+                      'standardDeviation': 0,
+                      'startTimeInMillis': 1614647100000,
+                      'sum': 1249,
+                      'useRange': False,
+                      'value': 1249},
+                     {'count': 5,
+                      'current': 1659,
+                      'max': 959,
+                      'min': 12,
+                      'occurrences': 1,
+                      'standardDeviation': 0,
+                      'startTimeInMillis': 1614647160000,
+                      'sum': 1659,
+                      'useRange': False,
+                      'value': 1659},
+                     {'count': 5,
+                      'current': 1696,
+                      'max': 861,
+                      'min': 12,
+                      'occurrences': 1,
+                      'standardDeviation': 0,
+                      'startTimeInMillis': 1614647220000,
+                      'sum': 1696,
+                      'useRange': False,
+                      'value': 1696},
+                     {'count': 5,
+                      'current': 2549,
+                      'max': 1315,
+                      'min': 12,
+                      'occurrences': 1,
+                      'standardDeviation': 0,
+                      'startTimeInMillis': 1614647280000,
+                      'sum': 2549,
+                      'useRange': False,
+                      'value': 2549},
+                     {'count': 5,
+                      'current': 2474,
+                      'max': 1380,
+                      'min': 12,
+                      'occurrences': 1,
+                      'standardDeviation': 0,
+                      'startTimeInMillis': 1614647340000,
+                      'sum': 2474,
+                      'useRange': False,
+                      'value': 2474},
+                     {'count': 5,
+                      'current': 1603,
+                      'max': 792,
+                      'min': 12,
+                      'occurrences': 1,
+                      'standardDeviation': 0,
+                      'startTimeInMillis': 1614647400000,
+                      'sum': 1603,
+                      'useRange': False,
+                      'value': 1603},
+                     {'count': 5,
+                      'current': 1909,
+                      'max': 1103,
+                      'min': 12,
+                      'occurrences': 1,
+                      'standardDeviation': 0,
+                      'startTimeInMillis': 1614647460000,
+                      'sum': 1909,
+                      'useRange': False,
+                      'value': 1909},
+                     {'count': 5,
+                      'current': 2241,
+                      'max': 1270,
+                      'min': 12,
+                      'occurrences': 1,
+                      'standardDeviation': 0,
+                      'startTimeInMillis': 1614647520000,
+                      'sum': 2241,
+                      'useRange': False,
+                      'value': 2241},
+                     {'count': 5,
+                      'current': 2665,
+                      'max': 1491,
+                      'min': 12,
+                      'occurrences': 1,
+                      'standardDeviation': 0,
+                      'startTimeInMillis': 1614647580000,
+                      'sum': 2665,
+                      'useRange': False,
+                      'value': 2665}]
+}]
 
 
 class TestAppdynamicsChecks:
@@ -214,101 +266,140 @@ class TestAppdynamicsChecks:
     @pytest.fixture
     def metric(self) -> AppdynamicsMetric:
         return AppdynamicsMetric(
-            name="test",
-            unit=Unit.REQUESTS_PER_MINUTE,
-            query='rate(ts("heapster.node.network.tx", cluster="idps-preprod-west2.cluster.k8s.local"))',
+            name="throughput",
+            unit=Unit.requests_per_minute,
+            query='Overall Application Performance|Calls per Minute',
         )
 
     @pytest.fixture
-    def heapster_node_network_tx(self) -> dict:
-        return {
-            'granularity': 60,
-            'name': 'rate(ts("heapster.node.network.tx", '
-                    'cluster="idps-preprod-west2.cluster.k8s.local"))',
-            'query': 'rate(ts("heapster.node.network.tx", '
-                     'cluster="idps-preprod-west2.cluster.k8s.local"))',
-            'stats': {'buffer_keys': 154,
-                      'cached_compacted_keys': 0,
-                      'compacted_keys': 24,
-                      'compacted_points': 12440,
-                      'cpu_ns': 36609718,
-                      'distributions': 0,
-                      'dropped_distributions': 0,
-                      'dropped_edges': 0,
-                      'dropped_metrics': 0,
-                      'dropped_spans': 0,
-                      'edges': 0,
-                      'keys': 168,
-                      'latency': 11,
-                      'metrics': 12584,
-                      'points': 12584,
-                      'queries': 108,
-                      'query_tasks': 0,
-                      's3_keys': 0,
-                      'skipped_compacted_keys': 22,
-                      'spans': 0,
-                      'summaries': 12584},
-            'timeseries': [
-                {'data': [[1604626020, 68441.23333333334],
-                          [1604626080, 75125.6],
-                          [1604626140, 59805.666666666664]],
-                 'host': 'ip-10-131-115-108.us-west-2.compute.internal',
-                 'label': 'heapster.node.network.tx',
-                 'tags': {'cluster': 'idps-preprod-west2.cluster.k8s.local',
-                          'label.beta.kubernetes.io/arch': 'amd64',
-                          'label.beta.kubernetes.io/instance-type': 'm5.2xlarge',
-                          'label.beta.kubernetes.io/os': 'linux',
-                          'label.failure-domain.beta.kubernetes.io/region': 'us-west-2',
-                          'label.failure-domain.beta.kubernetes.io/zone': 'us-west-2b',
-                          'label.kops.k8s.io/instancegroup': 'iks-system',
-                          'label.kubernetes.io/arch': 'amd64',
-                          'label.kubernetes.io/hostname': 'ip-10-131-115-108.us-west-2.compute.internal',
-                          'label.kubernetes.io/os': 'linux',
-                          'label.kubernetes.io/role': 'node',
-                          'label.node.kubernetes.io/instance-type': 'm5.2xlarge',
-                          'label.topology.kubernetes.io/region': 'us-west-2',
-                          'label.topology.kubernetes.io/zone': 'us-west-2b',
-                          'nodename': 'ip-10-131-115-108.us-west-2.compute.internal',
-                          'type': 'node'}},
-                {'data': [[1604626020, 33849.583333333336],
-                          [1604626080, 48680.51666666667],
-                          [1604626140, 34244.1]],
-                 'host': 'ip-10-131-115-88.us-west-2.compute.internal',
-                 'label': 'heapster.node.network.tx',
-                 'tags': {'cluster': 'idps-preprod-west2.cluster.k8s.local',
-                          'label.beta.kubernetes.io/arch': 'amd64',
-                          'label.beta.kubernetes.io/instance-type': 'm5.2xlarge',
-                          'label.beta.kubernetes.io/os': 'linux',
-                          'label.failure-domain.beta.kubernetes.io/region': 'us-west-2',
-                          'label.failure-domain.beta.kubernetes.io/zone': 'us-west-2b',
-                          'label.kops.k8s.io/instancegroup': 'iks-system',
-                          'label.kubernetes.io/arch': 'amd64',
-                          'label.kubernetes.io/hostname': 'ip-10-131-115-88.us-west-2.compute.internal',
-                          'label.kubernetes.io/os': 'linux',
-                          'label.kubernetes.io/role': 'node',
-                          'label.node.kubernetes.io/instance-type': 'm5.2xlarge',
-                          'label.topology.kubernetes.io/region': 'us-west-2',
-                          'label.topology.kubernetes.io/zone': 'us-west-2b',
-                          'nodename': 'ip-10-131-115-88.us-west-2.compute.internal',
-                          'type': 'node'}}],
-            'traceDimensions': []
-        }
+    def overall_application_performance_throughput(self) -> List[dict]:
+        return [{
+            'frequency': 'ONE_MIN',
+            'metricId': 11318904,
+            'metricName': 'BTM|Application Summary|Calls per Minute',
+            'metricPath': 'Overall Application Performance|Calls per Minute',
+            'metricValues': [{'count': 5,
+                              'current': 2098,
+                              'max': 1119,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647040000,
+                              'sum': 2098,
+                              'useRange': False,
+                              'value': 2098},
+                             {'count': 5,
+                              'current': 1249,
+                              'max': 615,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647100000,
+                              'sum': 1249,
+                              'useRange': False,
+                              'value': 1249},
+                             {'count': 5,
+                              'current': 1659,
+                              'max': 959,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647160000,
+                              'sum': 1659,
+                              'useRange': False,
+                              'value': 1659},
+                             {'count': 5,
+                              'current': 1696,
+                              'max': 861,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647220000,
+                              'sum': 1696,
+                              'useRange': False,
+                              'value': 1696},
+                             {'count': 5,
+                              'current': 2549,
+                              'max': 1315,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647280000,
+                              'sum': 2549,
+                              'useRange': False,
+                              'value': 2549},
+                             {'count': 5,
+                              'current': 2474,
+                              'max': 1380,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647340000,
+                              'sum': 2474,
+                              'useRange': False,
+                              'value': 2474},
+                             {'count': 5,
+                              'current': 1603,
+                              'max': 792,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647400000,
+                              'sum': 1603,
+                              'useRange': False,
+                              'value': 1603},
+                             {'count': 5,
+                              'current': 1909,
+                              'max': 1103,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647460000,
+                              'sum': 1909,
+                              'useRange': False,
+                              'value': 1909},
+                             {'count': 5,
+                              'current': 2241,
+                              'max': 1270,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647520000,
+                              'sum': 2241,
+                              'useRange': False,
+                              'value': 2241},
+                             {'count': 5,
+                              'current': 2665,
+                              'max': 1491,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647580000,
+                              'sum': 2665,
+                              'useRange': False,
+                              'value': 2665}]
+        }]
 
     @pytest.fixture
-    def mocked_api(self, heapster_node_network_tx):
+    def mocked_api(self, overall_application_performance_throughput):
         with respx.mock(
                 base_url="http://localhost:8090", assert_all_called=False
         ) as respx_mock:
             respx_mock.get(
                 re.compile(r"/controller/rest/.+"),
                 name="query"
-            ).mock(httpx.Response(200, json=heapster_node_network_tx))
+            ).mock(httpx.Response(200, json=overall_application_performance_throughput))
             yield respx_mock
 
     @pytest.fixture
     def checks(self, metric) -> AppdynamicsChecks:
         config = AppdynamicsConfiguration(
-            base_url="http://localhost:8090", metrics=[metric], api_key='abc12345'
+            base_url="http://localhost:8090",
+            metrics=[metric],
+            username='user',
+            password='pass',
+            account='acc',
+            app_id='app'
         )
         return AppdynamicsChecks(config=config)
 
@@ -319,11 +410,11 @@ class TestAppdynamicsChecks:
         check = await multichecks[0]()
         assert request.called
         assert check
-        assert check.name == r'Run query "rate(ts("heapster.node.network.tx", cluster="idps-preprod-west2.cluster.k8s.local"))"'
+        assert check.name == r'Run query "Overall Application Performance|Calls per Minute"'
         assert check.id == "check_queries_item_0"
         assert not check.critical
         assert check.success
-        assert check.message == "returned 2 results"
+        assert check.message == "returned 5 results"
 
 
 class TestAppdynamicsConnector:
@@ -332,100 +423,139 @@ class TestAppdynamicsConnector:
     def metric(self) -> AppdynamicsMetric:
         return AppdynamicsMetric(
             name="test",
-            unit=Unit.REQUESTS_PER_MINUTE,
-            query='rate(ts("heapster.node.network.tx", cluster="idps-preprod-west2.cluster.k8s.local"))',
+            unit=Unit.requests_per_minute,
+            query='Overall Application Performance|Calls per Minute',
         )
 
     @pytest.fixture
-    def heapster_node_network_tx(self) -> dict:
-        return {
-            'granularity': 60,
-            'name': 'rate(ts("heapster.node.network.tx", '
-                    'cluster="idps-preprod-west2.cluster.k8s.local"))',
-            'query': 'rate(ts("heapster.node.network.tx", '
-                     'cluster="idps-preprod-west2.cluster.k8s.local"))',
-            'stats': {'buffer_keys': 154,
-                      'cached_compacted_keys': 0,
-                      'compacted_keys': 24,
-                      'compacted_points': 12440,
-                      'cpu_ns': 36609718,
-                      'distributions': 0,
-                      'dropped_distributions': 0,
-                      'dropped_edges': 0,
-                      'dropped_metrics': 0,
-                      'dropped_spans': 0,
-                      'edges': 0,
-                      'keys': 168,
-                      'latency': 11,
-                      'metrics': 12584,
-                      'points': 12584,
-                      'queries': 108,
-                      'query_tasks': 0,
-                      's3_keys': 0,
-                      'skipped_compacted_keys': 22,
-                      'spans': 0,
-                      'summaries': 12584},
-            'timeseries': [
-                {'data': [[1604626020, 68441.23333333334],
-                          [1604626080, 75125.6],
-                          [1604626140, 59805.666666666664]],
-                 'host': 'ip-10-131-115-108.us-west-2.compute.internal',
-                 'label': 'heapster.node.network.tx',
-                 'tags': {'cluster': 'idps-preprod-west2.cluster.k8s.local',
-                          'label.beta.kubernetes.io/arch': 'amd64',
-                          'label.beta.kubernetes.io/instance-type': 'm5.2xlarge',
-                          'label.beta.kubernetes.io/os': 'linux',
-                          'label.failure-domain.beta.kubernetes.io/region': 'us-west-2',
-                          'label.failure-domain.beta.kubernetes.io/zone': 'us-west-2b',
-                          'label.kops.k8s.io/instancegroup': 'iks-system',
-                          'label.kubernetes.io/arch': 'amd64',
-                          'label.kubernetes.io/hostname': 'ip-10-131-115-108.us-west-2.compute.internal',
-                          'label.kubernetes.io/os': 'linux',
-                          'label.kubernetes.io/role': 'node',
-                          'label.node.kubernetes.io/instance-type': 'm5.2xlarge',
-                          'label.topology.kubernetes.io/region': 'us-west-2',
-                          'label.topology.kubernetes.io/zone': 'us-west-2b',
-                          'nodename': 'ip-10-131-115-108.us-west-2.compute.internal',
-                          'type': 'node'}},
-                {'data': [[1604626020, 33849.583333333336],
-                          [1604626080, 48680.51666666667],
-                          [1604626140, 34244.1]],
-                 'host': 'ip-10-131-115-88.us-west-2.compute.internal',
-                 'label': 'heapster.node.network.tx',
-                 'tags': {'cluster': 'idps-preprod-west2.cluster.k8s.local',
-                          'label.beta.kubernetes.io/arch': 'amd64',
-                          'label.beta.kubernetes.io/instance-type': 'm5.2xlarge',
-                          'label.beta.kubernetes.io/os': 'linux',
-                          'label.failure-domain.beta.kubernetes.io/region': 'us-west-2',
-                          'label.failure-domain.beta.kubernetes.io/zone': 'us-west-2b',
-                          'label.kops.k8s.io/instancegroup': 'iks-system',
-                          'label.kubernetes.io/arch': 'amd64',
-                          'label.kubernetes.io/hostname': 'ip-10-131-115-88.us-west-2.compute.internal',
-                          'label.kubernetes.io/os': 'linux',
-                          'label.kubernetes.io/role': 'node',
-                          'label.node.kubernetes.io/instance-type': 'm5.2xlarge',
-                          'label.topology.kubernetes.io/region': 'us-west-2',
-                          'label.topology.kubernetes.io/zone': 'us-west-2b',
-                          'nodename': 'ip-10-131-115-88.us-west-2.compute.internal',
-                          'type': 'node'}}],
-            'traceDimensions': []
-        }
+    def overall_application_performance_throughput(self) -> List[dict]:
+        return [{
+            'frequency': 'ONE_MIN',
+            'metricId': 11318904,
+            'metricName': 'BTM|Application Summary|Calls per Minute',
+            'metricPath': 'Overall Application Performance|Calls per Minute',
+            'metricValues': [{'count': 5,
+                              'current': 2098,
+                              'max': 1119,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647040000,
+                              'sum': 2098,
+                              'useRange': False,
+                              'value': 2098},
+                             {'count': 5,
+                              'current': 1249,
+                              'max': 615,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647100000,
+                              'sum': 1249,
+                              'useRange': False,
+                              'value': 1249},
+                             {'count': 5,
+                              'current': 1659,
+                              'max': 959,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647160000,
+                              'sum': 1659,
+                              'useRange': False,
+                              'value': 1659},
+                             {'count': 5,
+                              'current': 1696,
+                              'max': 861,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647220000,
+                              'sum': 1696,
+                              'useRange': False,
+                              'value': 1696},
+                             {'count': 5,
+                              'current': 2549,
+                              'max': 1315,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647280000,
+                              'sum': 2549,
+                              'useRange': False,
+                              'value': 2549},
+                             {'count': 5,
+                              'current': 2474,
+                              'max': 1380,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647340000,
+                              'sum': 2474,
+                              'useRange': False,
+                              'value': 2474},
+                             {'count': 5,
+                              'current': 1603,
+                              'max': 792,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647400000,
+                              'sum': 1603,
+                              'useRange': False,
+                              'value': 1603},
+                             {'count': 5,
+                              'current': 1909,
+                              'max': 1103,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647460000,
+                              'sum': 1909,
+                              'useRange': False,
+                              'value': 1909},
+                             {'count': 5,
+                              'current': 2241,
+                              'max': 1270,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647520000,
+                              'sum': 2241,
+                              'useRange': False,
+                              'value': 2241},
+                             {'count': 5,
+                              'current': 2665,
+                              'max': 1491,
+                              'min': 12,
+                              'occurrences': 1,
+                              'standardDeviation': 0,
+                              'startTimeInMillis': 1614647580000,
+                              'sum': 2665,
+                              'useRange': False,
+                              'value': 2665}]
+        }]
 
     @pytest.fixture
-    def mocked_api(self, heapster_node_network_tx):
+    def mocked_api(self, overall_application_performance_throughput):
         with respx.mock(
             base_url="http://localhost:8090", assert_all_called=False
         ) as respx_mock:
             respx_mock.get(
-                re.compile(r"/api/v2/.+"),
+                re.compile(r"/controller/rest/.+"),
                 name="query",
-            ).mock(httpx.Response(200, json=heapster_node_network_tx))
+            ).mock(httpx.Response(200, json=overall_application_performance_throughput))
             yield respx_mock
 
     @pytest.fixture
     def connector(self, metric) -> AppdynamicsConnector:
         config = AppdynamicsConfiguration(
-            base_url="http://localhost:8090", metrics=[metric], api_key='abc12345'
+            base_url="http://localhost:8090",
+            metrics=[metric],
+            username='user',
+            password='pass',
+            account='acc',
+            app_id='app'
         )
         return AppdynamicsConnector(config=config)
 
@@ -439,4 +569,5 @@ class TestAppdynamicsConnector:
         measurements = await connector.measure()
         assert request.called
         # Assert float values are the same (for first entry from first reading)
-        assert measurements.readings[0].values[0][1] == heapster_node_network_tx["timeseries"][0]["data"][0][1]
+        print(measurements.readings[0].data_points[0][1])
+        assert measurements.readings[0].data_points[0][1] == overall_application_performance_throughput[0]["metricValues"][0]["value"]
